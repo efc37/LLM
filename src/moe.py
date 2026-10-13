@@ -271,3 +271,21 @@ def upcycle_from_dense(moe_model, dense_model):
             new_sd[key] = dense_sd[re.sub(r"\.ff\.experts\.\d+\.", ".ff.", key)].clone()
     moe_model.load_state_dict(new_sd)
     return moe_model
+
+
+#####################################
+# Pérdida de entrenamiento
+#####################################
+def calc_loss_batch_moe(input_batch, target_batch, model, device, aux_loss_coef=0.0):
+    """Como calc_loss_batch del cap. 5, más el término de balanceo si el modelo es MoE.
+
+    Devuelve (pérdida total, entropía cruzada, L_aux); L_aux = 0 en el modelo base.
+    """
+    input_batch, target_batch = input_batch.to(device), target_batch.to(device)
+    logits = model(input_batch)                                   # (B, T, V)
+    ce = torch.nn.functional.cross_entropy(logits.flatten(0, 1), target_batch.flatten())
+    if isinstance(model, GPTMoEModel):
+        aux = model.aux_loss()
+    else:
+        aux = torch.zeros((), device=ce.device)
+    return ce + aux_loss_coef * aux, ce, aux
