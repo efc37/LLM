@@ -44,7 +44,7 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 | 3 | Despachos `loop` y `sorted` (eficiente, por defecto) | hecho | 1caeca1 |
 | 4 | Pérdida auxiliar de balanceo `load_balancing_loss` | hecho | e8d59b7 |
 | 5 | `MoETransformerBlock` + `GPTMoEModel` + `build_model` + `upcycle_from_dense` | hecho | ver git log |
-| 6 | Tiny Shakespeare (char-level) + `scripts/train_shakespeare.py`, resultados en `results/` | pendiente | |
+| 6 | Tiny Shakespeare (char-level) + `scripts/train_shakespeare.py` + `configs/` + `calc_loss_batch_moe` | hecho | ver git log |
 | 7 | `scripts/run_all.py`: denso vs MoE, ablación coef. aux {0, 0.01, 0.1}, tokens/s, uso de expertos, especialización | pendiente | |
 | 8 | Sección de la memoria | pendiente | |
 
@@ -75,6 +75,13 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 - Tests (de extremo a extremo, logits `allclose` atol 1e-5 con `GPTModel`): E=1; E=4 k=2; E=4 k=1 renormalizado; E=4 k=2 alternando capas con despacho `loop`. Control negativo: E=4 k=1 sin renormalizar (Switch) NO coincide (salida p·FFN(x)). También: alternancia de bloques, shapes de `expert_stats` (suma por capa = N·k), y el gradiente de CE + 0.01·L_aux llega al router de todas las capas.
 - Escala (cálculo analítico para GPT-2 124M, 163.0M parámetros con la cabeza sin compartir; FFN por capa 4.72M): E=4 k=1 → 333.1M totales / 163.0M activos por token; E=8 k=2 → 559.8M / 219.8M. Es la idea central del MoE: más parámetros sin más cómputo por token.
 
+**Bloque 6 — Entrenamiento en Tiny Shakespeare.**
+- `calc_loss_batch_moe(x, y, model, device, aux_loss_coef)` en `src/moe.py`: como `calc_loss_batch` del cap. 5 pero devuelve (CE + coef·L_aux, CE, L_aux); L_aux = 0 en el modelo base.
+- `scripts/train_shakespeare.py --config configs/X.json --seed s [--steps n]`: descarga Tiny Shakespeare a `data/` (ignorado en git), tokenizador por carácter (vocab 65; con BPE de 50257 el embedding dominaría un modelo tan pequeño), 90/10 train/val, lotes de trozos contiguos aleatorios con un `torch.Generator` sembrado, AdamW. Evalúa la val CE sobre 20 lotes fijos (semilla 1234, iguales para todos los modelos). Guarda en `results/<nombre>_seed<s>.json`: configuración, parámetros totales/activos, tokens/s (solo pasos de entrenamiento), historial (train/val CE, L_aux, fracción de uso por capa y experto) y una muestra generada con `generate` del libro.
+- Configs: `configs/dense.json`, `moe_e4k1.json`, `moe_e4k2.json` (emb 128, 4 capas, 4 cabezas, ctx 128, batch 32, lr 1e-3, wd 0.1, 2000 pasos, coef aux 0.01).
+- Tests (`tests/test_train.py`): tokenizador ida y vuelta; entrenamiento corto con texto sintético para base y MoE; misma semilla ⇒ mismas pérdidas y misma muestra (reproducibilidad); fracciones de uso suman 1.
+- Prueba de humo (100 pasos, seed 1, NO es resultado de la memoria): denso 824,832 parámetros, 18.0k tok/s, val CE 2.506; MoE E4k2 2,407,424 totales / 1,353,728 activos, 11.7k tok/s, val CE 2.490, L_aux 1.03.
+
 **Preguntas de repaso (tipo examen)**
 - E=8, k=2, batch 4×64: shapes de `probs`, `indices`, `weights`. ¿Y de `flat_experts`, `x_sorted`, `counts`? ¿Cuánto suma `counts`?
 - ¿Por qué `topk` no deja pasar gradiente por los índices? ¿Por dónde aprende el router?
@@ -87,6 +94,8 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 - En `MoETransformerBlock`, ¿dónde se aplica el MoE respecto a `norm2` y a la residual? ¿Cambia algo del flujo del bloque del libro?
 - Con expertos idénticos (upcycling), ¿por qué E=4 k=2 reproduce el modelo denso y E=4 k=1 estilo Switch no?
 - GPT-2 124M con E=4 k=1: ¿por qué los parámetros totales casi se duplican pero los activos por token no cambian?
+- ¿Por qué se evalúa a todos los modelos sobre los mismos lotes de validación? ¿Por qué tokenizar por carácter y no con el BPE de GPT-2 aquí?
+- En el entrenamiento MoE, ¿qué se suma a la CE y con qué peso? ¿Qué valor de L_aux indicaría que el router está equilibrado?
 
 ## Cómo quiero que trabajes
 1. **Primero explora, no escribas.** Al empezar: resume la estructura del repo, qué está hecho, qué falta, y revisa `git log` y las ramas. No toques nada todavía.
