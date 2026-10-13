@@ -11,9 +11,6 @@
 #   - ch05/01_main-chapter-code/gpt_train.py         (cap. 5, entrenamiento)
 #   - ch05/01_main-chapter-code/gpt_generate.py      (cap. 5, generación y pesos)
 #   - ch06/01_main-chapter-code/gpt_class_finetune.py (cap. 6, clasificación)
-#
-# La lógica es la del repositorio; solo cambian los comentarios (en español) y
-# los nombres de las funciones del cap. 6 que chocarían con las del cap. 5.
 
 import numpy as np
 import tiktoken
@@ -33,8 +30,8 @@ GPT_CONFIG_124M = {
     "emb_dim": 768,          # Dimensión de los embeddings
     "n_heads": 12,           # Número de cabezas de atención
     "n_layers": 12,          # Número de bloques transformer
-    "drop_rate": 0.1,        # Dropout
-    "qkv_bias": False        # Sesgo en las proyecciones Q, K, V
+    "drop_rate": 0.1,        # Dropout que se usa en el entrenamiento
+    "qkv_bias": False        # Sesgo en las proyecciones Q, K, V 
 }
 
 # Tamaños de GPT-2 cuyos pesos se pueden cargar en el cap. 5
