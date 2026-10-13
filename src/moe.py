@@ -55,6 +55,27 @@ class TopKRouter(nn.Module):
 
 
 #####################################
+# Pérdida auxiliar de balanceo de carga (Switch Transformer, Fedus et al. 2022)
+#####################################
+def load_balancing_loss(probs, indices, n_experts):
+    """L_aux = E * sum_i f_i * P_i
+
+      f_i: fracción de las N·k asignaciones que van al experto i (no derivable,
+           sale de topk)
+      P_i: probabilidad media que el router da al experto i (derivable)
+
+    Vale 1 si el reparto es uniforme (f_i = P_i = 1/E) y E si todo va a un
+    experto con probabilidad 1. Minimizarla empuja al router a bajar la
+    probabilidad de los expertos sobrecargados.
+    """
+    # probs: (N, E), indices: (N, k)
+    counts = torch.bincount(indices.reshape(-1), minlength=n_experts)  # (E,)
+    f = counts.to(probs.dtype) / indices.numel()                       # (E,)
+    P = probs.mean(dim=0)                                              # (E,)
+    return n_experts * torch.sum(f * P)
+
+
+#####################################
 # Expertos y capa MoE
 #####################################
 class Expert(nn.Module):
@@ -124,6 +145,10 @@ class MoEFeedForward(nn.Module):
             raise ValueError(f"dispatch desconocido: {self.dispatch}")
 
         return out.view(b, num_tokens, emb_dim)         # (B, T, D)
+
+    def aux_loss(self):
+        """Pérdida de balanceo del último forward."""
+        return load_balancing_loss(self.last_probs, self.last_indices, self.n_experts)
 
     def _dispatch_dense(self, x_flat, weights, indices):
         """Referencia: todos los expertos procesan todos los tokens (coste E veces el

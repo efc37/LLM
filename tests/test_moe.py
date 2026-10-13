@@ -1,9 +1,10 @@
 # Tests de la ampliación MoE. Ejecutar con: pytest tests/test_moe.py -v
 import pytest
 import torch
+import torch.nn as nn
 
 from model_base import FeedForward
-from moe import MoEFeedForward, TopKRouter
+from moe import MoEFeedForward, TopKRouter, load_balancing_loss
 
 
 def small_cfg(**moe):
@@ -144,3 +145,69 @@ def test_dispatch_with_unused_experts(dispatch):
     moe.dispatch = dispatch
     assert torch.allclose(moe(x), ref, atol=1e-6)
     assert len(moe.last_indices.unique()) < 16
+
+
+@pytest.mark.parametrize("n_experts,top_k", [(4, 1), (8, 2)])
+def test_aux_loss_perfect_balance_is_one(n_experts, top_k):
+    """Cada experto recibe las mismas asignaciones y la misma probabilidad media ⇒ 1."""
+    N = 4 * n_experts
+    # Token n elige los expertos n, n+1, ..., n+k-1 (mod E): f_i = 1/E
+    indices = (torch.arange(N).unsqueeze(1) + torch.arange(top_k)) % n_experts  # (N, k)
+    probs = torch.zeros(N, n_experts).scatter(1, indices, 1.0 / top_k)          # P_i = 1/E
+    assert torch.isclose(load_balancing_loss(probs, indices, n_experts), torch.tensor(1.0))
+
+
+@pytest.mark.parametrize("n_experts", [2, 4, 8])
+def test_aux_loss_collapse_is_n_experts(n_experts):
+    """Todos los tokens al experto 0 con probabilidad 1 ⇒ E (el máximo)."""
+    N = 32
+    indices = torch.zeros(N, 1, dtype=torch.long)
+    probs = torch.zeros(N, n_experts)
+    probs[:, 0] = 1.0
+    assert torch.isclose(load_balancing_loss(probs, indices, n_experts),
+                         torch.tensor(float(n_experts)))
+
+
+def test_aux_loss_uniform_router_is_one():
+    """Router con probabilidades uniformes (pesos a 0): P_i = 1/E ⇒ L = sum f_i = 1,
+    aunque topk desempate eligiendo siempre los mismos expertos."""
+    moe = MoEFeedForward(small_cfg(n_experts=8, top_k=2))
+    nn.init.zeros_(moe.router.gate.weight)
+    moe(torch.randn(2, 10, 32))
+    assert torch.isclose(moe.aux_loss(), torch.tensor(1.0))
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_aux_loss_gradient_rebalances_router(seed):
+    """Router sesgado hacia el experto 0; optimizar SOLO la pérdida auxiliar debe
+    repartir la carga (la fracción del experto más usado baja hacia 1/E = 0.25).
+
+    Nota: con sesgos mucho mayores el softmax se satura (P_0 = 1), su gradiente
+    desaparece y la pérdida auxiliar ya no puede recuperar al router; con lr
+    grandes la carga salta en bloque a otro experto. Por eso sesgo y lr moderados.
+    """
+    torch.manual_seed(seed)
+    E = 4
+    moe = MoEFeedForward(small_cfg(n_experts=E, top_k=1))
+    with torch.no_grad():
+        moe.router.gate.weight[0] += 0.1
+    # Entrada con media 1: logit_0 recibe un extra de ~0.1 * D = 3.2 ⇒ casi todo al experto 0
+    x = torch.randn(8, 32, 32) + 1.0
+
+    def max_fraction():
+        with torch.no_grad():
+            moe(x)
+        return torch.bincount(moe.last_indices.reshape(-1), minlength=E).max().item() / moe.last_indices.numel()
+
+    before = max_fraction()
+    opt = torch.optim.SGD(moe.router.parameters(), lr=0.05)
+    for _ in range(300):
+        opt.zero_grad()
+        moe(x)
+        moe.aux_loss().backward()
+        assert moe.router.gate.weight.grad.abs().sum() > 0
+        opt.step()
+    after = max_fraction()
+
+    assert before > 0.9
+    assert after < 0.35
