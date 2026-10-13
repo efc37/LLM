@@ -5,6 +5,8 @@
 # ejecuciones cuyo JSON ya existe en results/ (usa --force para repetirlas).
 #
 #   python scripts/run_all.py
+#
+# Al final genera results/summary.{json,md}, las figuras y el análisis de especialización.
 
 import argparse
 import os
@@ -43,6 +45,13 @@ def main():
 
     print("[ejecutando] benchmark de despachos", flush=True)
     subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "bench_dispatch.py")], check=True)
+
+    # Tablas, figuras y análisis de especialización (requiere los pesos en checkpoints/)
+    print("[ejecutando] análisis", flush=True)
+    subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "analyze.py")], check=True)
+    for name in ["moe_e4k1", "moe_e4k1_aux0"]:
+        subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "specialization.py"),
+                        "--name", name], check=True)
 
 
 if __name__ == "__main__":

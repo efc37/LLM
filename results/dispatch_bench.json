@@ -1,0 +1,104 @@
+{
+ "setup": {
+  "emb_dim": 128,
+  "batch": 32,
+  "tokens": 128,
+  "warmup": 5,
+  "reps": 30,
+  "torch_threads": 8,
+  "torch_version": "2.6.0+cpu"
+ },
+ "runs": [
+  {
+   "layer": "FFN denso",
+   "dispatch": "-",
+   "median_ms": 23.561950016301125,
+   "stdev_ms": 0.38224457463621636,
+   "tokens_per_s": 173839.60144072198
+  },
+  {
+   "layer": "MoE E=4 k=1",
+   "dispatch": "dense",
+   "median_ms": 99.43880001083016,
+   "stdev_ms": 3.3245981708821497,
+   "tokens_per_s": 41191.16481246649
+  },
+  {
+   "layer": "MoE E=4 k=1",
+   "dispatch": "loop",
+   "median_ms": 25.000900001032278,
+   "stdev_ms": 0.6560320238241455,
+   "tokens_per_s": 163834.10196556433
+  },
+  {
+   "layer": "MoE E=4 k=1",
+   "dispatch": "sorted",
+   "median_ms": 24.069400009466335,
+   "stdev_ms": 2.682730091959968,
+   "tokens_per_s": 170174.57844354535
+  },
+  {
+   "layer": "MoE E=4 k=2",
+   "dispatch": "dense",
+   "median_ms": 99.33970001293346,
+   "stdev_ms": 1.5508611000051296,
+   "tokens_per_s": 41232.25658489732
+  },
+  {
+   "layer": "MoE E=4 k=2",
+   "dispatch": "loop",
+   "median_ms": 49.82160002691671,
+   "stdev_ms": 1.2449566269225811,
+   "tokens_per_s": 82213.33714266677
+  },
+  {
+   "layer": "MoE E=4 k=2",
+   "dispatch": "sorted",
+   "median_ms": 48.546250036451966,
+   "stdev_ms": 0.835922857170606,
+   "tokens_per_s": 84373.14925302022
+  },
+  {
+   "layer": "MoE E=8 k=1",
+   "dispatch": "dense",
+   "median_ms": 202.81054996303283,
+   "stdev_ms": 2.618071024278741,
+   "tokens_per_s": 20196.188022499795
+  },
+  {
+   "layer": "MoE E=8 k=1",
+   "dispatch": "loop",
+   "median_ms": 28.083499986678362,
+   "stdev_ms": 1.0204461643961777,
+   "tokens_per_s": 145850.76653347947
+  },
+  {
+   "layer": "MoE E=8 k=1",
+   "dispatch": "sorted",
+   "median_ms": 25.904250011080876,
+   "stdev_ms": 0.9506370280805226,
+   "tokens_per_s": 158120.77162040528
+  },
+  {
+   "layer": "MoE E=8 k=2",
+   "dispatch": "dense",
+   "median_ms": 202.3180000251159,
+   "stdev_ms": 2.313801825488304,
+   "tokens_per_s": 20245.356317735048
+  },
+  {
+   "layer": "MoE E=8 k=2",
+   "dispatch": "loop",
+   "median_ms": 50.07794999983162,
+   "stdev_ms": 1.6054250385010906,
+   "tokens_per_s": 81792.48551535701
+  },
+  {
+   "layer": "MoE E=8 k=2",
+   "dispatch": "sorted",
+   "median_ms": 47.904749982990324,
+   "stdev_ms": 1.625777697832917,
+   "tokens_per_s": 85503.00338597693
+  }
+ ]
+}

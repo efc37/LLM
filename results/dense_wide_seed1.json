@@ -1,0 +1,479 @@
+{
+ "name": "dense_wide",
+ "seed": 1,
+ "config": {
+  "model": {
+   "context_length": 128,
+   "emb_dim": 128,
+   "n_heads": 4,
+   "n_layers": 4,
+   "drop_rate": 0.0,
+   "qkv_bias": false,
+   "moe": {
+    "n_experts": 1,
+    "top_k": 1,
+    "expert_hidden": 2048,
+    "aux_loss_coef": 0.0
+   },
+   "vocab_size": 65
+  },
+  "train": {
+   "steps": 2000,
+   "batch_size": 32,
+   "lr": 0.001,
+   "weight_decay": 0.1,
+   "eval_every": 100,
+   "eval_batches": 20
+  }
+ },
+ "params_total": 2404352,
+ "params_active": 2404352,
+ "train_time_s": 1280.8645842999686,
+ "train_tokens_per_s": 6395.6799964745505,
+ "torch_threads": 8,
+ "torch_version": "2.6.0+cpu",
+ "final_val_ce": 1.576191484928131,
+ "history": [
+  {
+   "step": 100,
+   "tokens_seen": 409600,
+   "train_ce": 2.655765402317047,
+   "train_aux": 1.0,
+   "val_ce": 2.4931097745895388,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 200,
+   "tokens_seen": 819200,
+   "train_ce": 2.4261724734306336,
+   "train_aux": 1.0,
+   "val_ce": 2.386201560497284,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 300,
+   "tokens_seen": 1228800,
+   "train_ce": 2.2696819615364077,
+   "train_aux": 1.0,
+   "val_ce": 2.2184860706329346,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 400,
+   "tokens_seen": 1638400,
+   "train_ce": 2.09787092089653,
+   "train_aux": 1.0,
+   "val_ce": 2.0914599776268004,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 500,
+   "tokens_seen": 2048000,
+   "train_ce": 1.9571233630180358,
+   "train_aux": 1.0,
+   "val_ce": 1.9951469838619231,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 600,
+   "tokens_seen": 2457600,
+   "train_ce": 1.8413082110881804,
+   "train_aux": 1.0,
+   "val_ce": 1.9200191617012023,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 700,
+   "tokens_seen": 2867200,
+   "train_ce": 1.7480323719978332,
+   "train_aux": 1.0,
+   "val_ce": 1.8514228582382202,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 800,
+   "tokens_seen": 3276800,
+   "train_ce": 1.6845551097393037,
+   "train_aux": 1.0,
+   "val_ce": 1.8143645524978638,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 900,
+   "tokens_seen": 3686400,
+   "train_ce": 1.621054253578186,
+   "train_aux": 1.0,
+   "val_ce": 1.7583349645137787,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1000,
+   "tokens_seen": 4096000,
+   "train_ce": 1.5777153658866883,
+   "train_aux": 1.0,
+   "val_ce": 1.7362129032611846,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1100,
+   "tokens_seen": 4505600,
+   "train_ce": 1.5361371791362763,
+   "train_aux": 1.0,
+   "val_ce": 1.7054521501064301,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1200,
+   "tokens_seen": 4915200,
+   "train_ce": 1.5067634248733521,
+   "train_aux": 1.0,
+   "val_ce": 1.686801254749298,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1300,
+   "tokens_seen": 5324800,
+   "train_ce": 1.4832704842090607,
+   "train_aux": 1.0,
+   "val_ce": 1.6456344544887542,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1400,
+   "tokens_seen": 5734400,
+   "train_ce": 1.4593522107601167,
+   "train_aux": 1.0,
+   "val_ce": 1.6423646211624146,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1500,
+   "tokens_seen": 6144000,
+   "train_ce": 1.4303143846988677,
+   "train_aux": 1.0,
+   "val_ce": 1.6276552319526671,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1600,
+   "tokens_seen": 6553600,
+   "train_ce": 1.4172046613693237,
+   "train_aux": 1.0,
+   "val_ce": 1.6107472419738769,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1700,
+   "tokens_seen": 6963200,
+   "train_ce": 1.4058624231815338,
+   "train_aux": 1.0,
+   "val_ce": 1.6054509580135345,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1800,
+   "tokens_seen": 7372800,
+   "train_ce": 1.3878787446022034,
+   "train_aux": 1.0,
+   "val_ce": 1.5913754463195802,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 1900,
+   "tokens_seen": 7782400,
+   "train_ce": 1.3804355359077454,
+   "train_aux": 1.0,
+   "val_ce": 1.5776881635189057,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  },
+  {
+   "step": 2000,
+   "tokens_seen": 8192000,
+   "train_ce": 1.3683090245723724,
+   "train_aux": 1.0,
+   "val_ce": 1.576191484928131,
+   "val_aux": 1.0,
+   "expert_fraction": [
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.0
+    ]
+   ]
+  }
+ ],
+ "sample": "ROMEO:\n\nABHORSON:\nWhat, sir, bear the mountail aid itch away, which\nshe is the nametical of hypoier.\n\nPAULINA:\nThere bride him! that hath did is my due\nThan was store shall be a for the man that\nWhere lawfu"
+}

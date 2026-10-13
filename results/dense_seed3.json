@@ -1,0 +1,193 @@
+{
+ "name": "dense",
+ "seed": 3,
+ "config": {
+  "model": {
+   "context_length": 128,
+   "emb_dim": 128,
+   "n_heads": 4,
+   "n_layers": 4,
+   "drop_rate": 0.0,
+   "qkv_bias": false,
+   "vocab_size": 65
+  },
+  "train": {
+   "steps": 2000,
+   "batch_size": 32,
+   "lr": 0.001,
+   "weight_decay": 0.1,
+   "eval_every": 100,
+   "eval_batches": 20
+  }
+ },
+ "params_total": 824832,
+ "params_active": 824832,
+ "train_time_s": 434.6407375987619,
+ "train_tokens_per_s": 18847.75008725122,
+ "torch_threads": 8,
+ "torch_version": "2.6.0+cpu",
+ "final_val_ce": 1.639636754989624,
+ "history": [
+  {
+   "step": 100,
+   "tokens_seen": 409600,
+   "train_ce": 2.714381601810455,
+   "train_aux": 0.0,
+   "val_ce": 2.5011648178100585,
+   "val_aux": 0.0
+  },
+  {
+   "step": 200,
+   "tokens_seen": 819200,
+   "train_ce": 2.4472910237312315,
+   "train_aux": 0.0,
+   "val_ce": 2.4094064950942995,
+   "val_aux": 0.0
+  },
+  {
+   "step": 300,
+   "tokens_seen": 1228800,
+   "train_ce": 2.3142728424072265,
+   "train_aux": 0.0,
+   "val_ce": 2.2599499583244325,
+   "val_aux": 0.0
+  },
+  {
+   "step": 400,
+   "tokens_seen": 1638400,
+   "train_ce": 2.1551281929016115,
+   "train_aux": 0.0,
+   "val_ce": 2.1356286287307737,
+   "val_aux": 0.0
+  },
+  {
+   "step": 500,
+   "tokens_seen": 2048000,
+   "train_ce": 2.0242305862903596,
+   "train_aux": 0.0,
+   "val_ce": 2.048390746116638,
+   "val_aux": 0.0
+  },
+  {
+   "step": 600,
+   "tokens_seen": 2457600,
+   "train_ce": 1.9201685643196107,
+   "train_aux": 0.0,
+   "val_ce": 1.9794069588184358,
+   "val_aux": 0.0
+  },
+  {
+   "step": 700,
+   "tokens_seen": 2867200,
+   "train_ce": 1.8307256317138672,
+   "train_aux": 0.0,
+   "val_ce": 1.9235104143619537,
+   "val_aux": 0.0
+  },
+  {
+   "step": 800,
+   "tokens_seen": 3276800,
+   "train_ce": 1.7653939878940583,
+   "train_aux": 0.0,
+   "val_ce": 1.8748005211353302,
+   "val_aux": 0.0
+  },
+  {
+   "step": 900,
+   "tokens_seen": 3686400,
+   "train_ce": 1.7090245509147644,
+   "train_aux": 0.0,
+   "val_ce": 1.8361162960529327,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1000,
+   "tokens_seen": 4096000,
+   "train_ce": 1.6722493469715118,
+   "train_aux": 0.0,
+   "val_ce": 1.7994764983654021,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1100,
+   "tokens_seen": 4505600,
+   "train_ce": 1.6263745880126954,
+   "train_aux": 0.0,
+   "val_ce": 1.7890604317188263,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1200,
+   "tokens_seen": 4915200,
+   "train_ce": 1.6025605595111847,
+   "train_aux": 0.0,
+   "val_ce": 1.7513703405857086,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1300,
+   "tokens_seen": 5324800,
+   "train_ce": 1.5749131369590759,
+   "train_aux": 0.0,
+   "val_ce": 1.7388708114624023,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1400,
+   "tokens_seen": 5734400,
+   "train_ce": 1.55569202542305,
+   "train_aux": 0.0,
+   "val_ce": 1.7179356575012208,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1500,
+   "tokens_seen": 6144000,
+   "train_ce": 1.535811836719513,
+   "train_aux": 0.0,
+   "val_ce": 1.6940635323524476,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1600,
+   "tokens_seen": 6553600,
+   "train_ce": 1.511722402572632,
+   "train_aux": 0.0,
+   "val_ce": 1.6858475744724273,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1700,
+   "tokens_seen": 6963200,
+   "train_ce": 1.4931423604488372,
+   "train_aux": 0.0,
+   "val_ce": 1.681273454427719,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1800,
+   "tokens_seen": 7372800,
+   "train_ce": 1.4796833515167236,
+   "train_aux": 0.0,
+   "val_ce": 1.6609697103500367,
+   "val_aux": 0.0
+  },
+  {
+   "step": 1900,
+   "tokens_seen": 7782400,
+   "train_ce": 1.4627723169326783,
+   "train_aux": 0.0,
+   "val_ce": 1.666712188720703,
+   "val_aux": 0.0
+  },
+  {
+   "step": 2000,
+   "tokens_seen": 8192000,
+   "train_ce": 1.4572188675403595,
+   "train_aux": 0.0,
+   "val_ce": 1.639636754989624,
+   "val_aux": 0.0
+  }
+ ],
+ "sample": "ROMEO:\nIf you are sing in to look our hand:\nAnd I see in him lie a slaught's bration,\nThis generally good of boy: I had that no part,\nO stalle do suff well, like me as dolour,\nBut becomes begue men: if love"
+}
