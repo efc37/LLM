@@ -45,7 +45,7 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 | 4 | Pérdida auxiliar de balanceo `load_balancing_loss` | hecho | e8d59b7 |
 | 5 | `MoETransformerBlock` + `GPTMoEModel` + `build_model` + `upcycle_from_dense` | hecho | ver git log |
 | 6 | Tiny Shakespeare (char-level) + `scripts/train_shakespeare.py` + `configs/` + `calc_loss_batch_moe` | hecho | ver git log |
-| 7 | `scripts/run_all.py`: denso vs MoE, ablación coef. aux {0, 0.01, 0.1}, tokens/s, uso de expertos, especialización | en curso (lanzado 13-oct) | b0dac07 |
+| 7 | `scripts/run_all.py`: denso vs MoE, ablación coef. aux {0, 0.01, 0.1}, tokens/s, uso de expertos, especialización | hecho | b0dac07, 5374c23 |
 | 8 | Sección de la memoria | pendiente | |
 
 **Bloque 1 — Router top-k.** `gate = Linear(D, E, bias=False)`: x (N,D) → logits (N,E) → softmax `probs` (N,E) → `topk` → `indices` (N,k) y `weights` (N,k). `probs` se guarda para la pérdida auxiliar. `topk` no es derivable en los índices: el router aprende a través de los pesos (y de la pérdida auxiliar).
@@ -82,7 +82,7 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 - Tests (`tests/test_train.py`): tokenizador ida y vuelta; entrenamiento corto con texto sintético para base y MoE; misma semilla ⇒ mismas pérdidas y misma muestra (reproducibilidad); fracciones de uso suman 1.
 - Prueba de humo (100 pasos, seed 1, NO es resultado de la memoria): denso 824,832 parámetros, 18.0k tok/s, val CE 2.506; MoE E4k2 2,407,424 totales / 1,353,728 activos, 11.7k tok/s, val CE 2.490, L_aux 1.03.
 
-**Bloque 7 — Batería de experimentos (lanzada el 13-oct, ~3 h 20 min en CPU).** Comando: `python scripts/run_all.py` (salta lo ya hecho; log en `results/run_all.log`). 6 configuraciones × semillas {1, 2, 3} = 18 entrenamientos de 2000 pasos (≈8.2M tokens cada uno), en secuencia para no falsear los tokens/s, y al final `scripts/bench_dispatch.py`.
+**Bloque 7 — Batería de experimentos (ejecutada el 13-oct, ~3 h 20 min en CPU, 8 hilos).** Comando: `python scripts/run_all.py` (salta lo ya hecho; log en `results/run_all.log`). 6 configuraciones × semillas {1, 2, 3} = 18 entrenamientos de 2000 pasos (≈8.2M tokens cada uno), en secuencia para no falsear los tokens/s, y al final `scripts/bench_dispatch.py`.
 | Config | Qué es | Pregunta que responde | Parámetros totales / activos |
 |---|---|---|---|
 | `dense` | GPT del libro (FFN 128→512→128) | referencia | 824,832 / 824,832 |
@@ -96,7 +96,25 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 - `bench_dispatch.py`: forward+backward de FFN denso vs MoE {E4k1, E4k2, E8k1, E8k2} × despachos {dense, loop, sorted}, 4096 tokens, D=128, mediana de 30 repeticiones → `results/dispatch_bench.json`.
 - Los pesos se guardan en `checkpoints/` (no versionado) para el análisis de especialización (qué caracteres van a cada experto), que se hará después.
 - Mientras corre, no usar el PC para cosas pesadas (falsea los tokens/s).
-- Pendiente: script de análisis (tablas media ± desviación, curvas de val CE, uso de expertos por capa) → resultados citables en la memoria.
+- Análisis: `scripts/analyze.py` → `results/summary.{json,md}`, `results/fig_val_ce.png`, `results/fig_expert_load.png`; `scripts/specialization.py --name X` → `results/specialization_X.{json,md}`. `run_all.py` los lanza al final. Regenerarlos da ficheros idénticos byte a byte (comprobado con `git status`).
+
+**Resultados del bloque 7 (cifras reales, `results/summary.md`; media ± desviación, 3 semillas, 2000 pasos)**
+| Modelo | Parám. totales / activos | Val CE | tok/s entrenando | Tiempo | Carga máx. experto (peor capa) |
+|---|---|---|---|---|---|
+| Denso (libro) | 824,832 / 824,832 | 1.6449 ± 0.0077 | 18,636 | 7.3 min | — |
+| MoE E=4 k=1 (coef 0.01) | 2,407,424 / 826,880 | 1.5953 ± 0.0119 | 17,585 | 7.8 min | 0.341 ± 0.053 |
+| MoE E=4 k=2 (coef 0.01) | 2,407,424 / 1,353,728 | 1.5807 ± 0.0064 | 11,920 | 11.5 min | 0.307 ± 0.004 |
+| Denso ancho (FFN 4×) | 2,404,352 / 2,404,352 | 1.5760 ± 0.0039 | 6,390 | 21.4 min | — |
+| MoE E=4 k=1, coef 0 | 2,407,424 / 826,880 | 1.6051 ± 0.0064 | 17,492 | 7.8 min | 0.654 ± 0.080 |
+| MoE E=4 k=1, coef 0.1 | 2,407,424 / 826,880 | 1.5935 ± 0.0044 | 17,865 | 7.6 min | 0.263 ± 0.004 |
+
+Conclusiones (y cuánto se pueden afirmar):
+1. **MoE k=1 vs denso con el mismo cómputo por token:** −0.050 de val CE con solo un 5.6 % menos de tok/s. Es robusto: las 3 semillas del MoE (1.582, 1.601, 1.604) son mejores que las 3 del denso (1.641, 1.654, 1.640).
+2. **Frente al denso ancho (mismos parámetros totales):** el MoE k=1 recupera el 72 % de la mejora del denso ancho ((1.6449−1.5953)/(1.6449−1.5760)) y el k=2 el 93 %, entrenando 2.75× y 1.56× más rápido respectivamente. La diferencia entre k=2 y el denso ancho (0.005) es del orden de la desviación: no se puede afirmar que sean distintos.
+3. **Ablación de L_aux:** sin pérdida de balanceo el router se desequilibra (el experto más usado llega al 65 % ± 8 % de los tokens en la peor capa, y hasta un 74 % en una capa; L_aux 1.40) pero NO colapsa del todo. Con 0.01 queda en 34 % y con 0.1 en 26 % (casi el 25 % ideal). La val CE sin L_aux es algo peor (1.605 vs 1.595), pero la diferencia es comparable a la desviación: es una tendencia, no un resultado concluyente. Un coef. de 0.1 no perjudica la CE (1.5935).
+4. **Despacho** (`results/dispatch_bench.json`, una capa, 4096 tokens, fwd+bwd): `sorted` cuesta lo mismo que el FFN denso con k=1 (24.07 vs 23.56 ms, +2 %) y escala con k, no con E (E=8 k=1: 25.90 ms). `sorted` gana a `loop` en todas las configuraciones, y más con más expertos (E=8 k=1: 25.90 vs 28.08 ms, −8 %). La referencia densa cuesta E veces más (99 ms con E=4, 203 ms con E=8).
+5. **Especialización** (`results/specialization_moe_e4k1.md`): la información mutua normalizada entre la clase del carácter de entrada y el experto crece con la profundidad (capa 1: 0.08–0.22; capa 4: 0.37–0.41, en las 3 semillas). En la capa 4 (semilla 1), un experto recibe el 100 % de los saltos de línea, el 82 % de las mayúsculas y el 86 % de la puntuación ("fronteras": fin de verso, nombres de personaje); vocales y consonantes van a otros expertos. Matiz: el router ve el estado contextual, no solo el carácter, así que es una correlación, no una regla.
+- **Limitaciones:** los modelos siguen mejorando a los 2000 pasos (la mejor val CE es la del último paso), así que son comparaciones a presupuesto fijo, no a convergencia; solo 3 semillas; un único corpus pequeño y tokens por carácter; tiempos en CPU (en GPU el despacho se comporta distinto).
 
 **Preguntas de repaso (tipo examen)**
 - E=8, k=2, batch 4×64: shapes de `probs`, `indices`, `weights`. ¿Y de `flat_experts`, `x_sorted`, `counts`? ¿Cuánto suma `counts`?
@@ -110,6 +128,11 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 - En `MoETransformerBlock`, ¿dónde se aplica el MoE respecto a `norm2` y a la residual? ¿Cambia algo del flujo del bloque del libro?
 - Con expertos idénticos (upcycling), ¿por qué E=4 k=2 reproduce el modelo denso y E=4 k=1 estilo Switch no?
 - GPT-2 124M con E=4 k=1: ¿por qué los parámetros totales casi se duplican pero los activos por token no cambian?
+- ¿Qué compara exactamente MoE k=1 vs denso, y qué compara MoE vs denso ancho? ¿Qué se mantiene igual en cada comparación?
+- Sin L_aux, ¿qué le pasa a la carga de los expertos? ¿Por qué un desequilibrio así es peor aunque la CE apenas cambie? (pista: capacidad desperdiciada, y en GPU, cuellos de botella)
+- ¿Por qué el despacho `sorted` cuesta casi lo mismo con E=4 y E=8 si k=1?
+- ¿Qué mide la información mutua normalizada del análisis de especialización y por qué crece con la profundidad?
+- ¿Por qué con 3 semillas no podemos afirmar que MoE k=2 y el denso ancho sean distintos?
 - ¿Por qué se evalúa a todos los modelos sobre los mismos lotes de validación? ¿Por qué tokenizar por carácter y no con el BPE de GPT-2 aquí?
 - En el entrenamiento MoE, ¿qué se suma a la CE y con qué peso? ¿Qué valor de L_aux indicaría que el router está equilibrado?
 
