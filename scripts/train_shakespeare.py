@@ -102,8 +102,9 @@ def evaluate(model, data, cfg, tcfg, aux_coef, seed):
 #####################################
 # Entrenamiento
 #####################################
-def train(config, seed, text=None, steps=None, verbose=True, prompt="ROMEO:"):
-    """Entrena según la configuración y devuelve un dict con todos los resultados."""
+def train(config, seed, text=None, steps=None, verbose=True, prompt="ROMEO:", return_model=False):
+    """Entrena según la configuración y devuelve un dict con todos los resultados
+    (y el modelo entrenado si return_model=True)."""
     text = load_text() if text is None else text
     tok = CharTokenizer(text)
     data = torch.tensor(tok.encode(text), dtype=torch.long)
@@ -170,13 +171,14 @@ def train(config, seed, text=None, steps=None, verbose=True, prompt="ROMEO:"):
                                  context_size=cfg["context_length"],
                                  temperature=0.8, top_k=min(20, tok.vocab_size))[0].tolist())
 
-    return {
+    result = {
         "name": config["name"], "seed": seed, "config": {"model": cfg, "train": tcfg},
         "params_total": total_params, "params_active": active_params,
         "train_time_s": train_time, "train_tokens_per_s": tokens_seen / train_time,
         "torch_threads": torch.get_num_threads(), "torch_version": torch.__version__,
         "final_val_ce": history[-1]["val_ce"], "history": history, "sample": sample,
     }
+    return (result, model) if return_model else result
 
 
 def main():
@@ -185,11 +187,17 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--steps", type=int, default=None, help="sobrescribe train.steps")
     parser.add_argument("--out", default=os.path.join(ROOT, "results"))
+    parser.add_argument("--save-model", action="store_true",
+                        help="guarda los pesos en checkpoints/ (no se versiona)")
     args = parser.parse_args()
 
     with open(args.config, encoding="utf-8") as f:
         config = json.load(f)
-    result = train(config, args.seed, steps=args.steps)
+    result, model = train(config, args.seed, steps=args.steps, return_model=True)
+    if args.save_model:
+        ckpt_dir = os.path.join(ROOT, "checkpoints")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        torch.save(model.state_dict(), os.path.join(ckpt_dir, f"{config['name']}_seed{args.seed}.pt"))
 
     os.makedirs(args.out, exist_ok=True)
     out_path = os.path.join(args.out, f"{config['name']}_seed{args.seed}.json")
