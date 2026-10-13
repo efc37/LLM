@@ -98,3 +98,49 @@ def test_moe_all_experts_is_softmax_mixture():
     for n in range(x_flat.shape[0]):
         expected = sum(probs[n, e] * moe.experts[e](x_flat[n]) for e in range(4))
         assert torch.allclose(out[n], expected, atol=1e-5)
+
+
+def _forward_backward(moe, x, dispatch):
+    """Ejecuta forward+backward con un despacho dado y devuelve salida y gradientes."""
+    moe.zero_grad()
+    x = x.clone().requires_grad_(True)
+    moe.dispatch = dispatch
+    out = moe(x)
+    # Pérdida arbitraria pero no simétrica para que los gradientes sean informativos
+    (out * torch.linspace(-1, 1, out.numel()).view_as(out)).sum().backward()
+    grads = {name: p.grad.clone() for name, p in moe.named_parameters() if p.grad is not None}
+    return out.detach(), x.grad.clone(), grads
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize("n_experts,top_k,normalize", [(4, 1, None), (8, 2, None), (8, 2, False), (4, 4, True)])
+@pytest.mark.parametrize("dispatch", ["loop", "sorted"])
+def test_dispatch_matches_dense(dispatch, n_experts, top_k, normalize, seed):
+    """Salida, gradiente respecto a la entrada y gradiente de cada parámetro iguales
+    a los de la referencia densa."""
+    torch.manual_seed(seed)
+    moe = MoEFeedForward(small_cfg(n_experts=n_experts, top_k=top_k, normalize_topk=normalize))
+    x = torch.randn(4, 16, 32)
+
+    out_ref, gx_ref, g_ref = _forward_backward(moe, x, "dense")
+    out, gx, g = _forward_backward(moe, x, dispatch)
+
+    assert torch.allclose(out, out_ref, atol=1e-5)
+    assert torch.allclose(gx, gx_ref, atol=1e-5)
+    # En la densa todos los expertos tienen gradiente (aunque sea 0 si nadie los elige)
+    for name, grad_ref in g_ref.items():
+        grad = g.get(name, torch.zeros_like(grad_ref))
+        assert torch.allclose(grad, grad_ref, atol=1e-5), name
+
+
+@pytest.mark.parametrize("dispatch", ["loop", "sorted"])
+def test_dispatch_with_unused_experts(dispatch):
+    """Pocos tokens y muchos expertos: algunos expertos no reciben ningún token."""
+    torch.manual_seed(0)
+    moe = MoEFeedForward(small_cfg(n_experts=16, top_k=1))
+    x = torch.randn(1, 3, 32)
+    moe.dispatch = "dense"
+    ref = moe(x)
+    moe.dispatch = dispatch
+    assert torch.allclose(moe(x), ref, atol=1e-6)
+    assert len(moe.last_indices.unique()) < 16

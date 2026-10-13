@@ -82,7 +82,11 @@ class MoEFeedForward(nn.Module):
     salida(x) = sum_{j=1..k} weights_j(x) * Experto_{indices_j(x)}(x)
 
     cfg["moe"] admite: n_experts, top_k, expert_hidden (por defecto 4*emb_dim),
-    normalize_topk (por defecto k>1) y dispatch ("dense").
+    normalize_topk (por defecto k>1) y dispatch:
+      "dense"  referencia: todos los expertos con todos los tokens (coste E·FFN)
+      "loop"   por experto, selecciona con una máscara los tokens que lo eligieron
+      "sorted" ordena las asignaciones por experto y procesa lotes contiguos (por defecto)
+    Los tres dan el mismo resultado; solo cambia el coste.
     """
 
     def __init__(self, cfg):
@@ -91,7 +95,7 @@ class MoEFeedForward(nn.Module):
         emb_dim = cfg["emb_dim"]
         self.n_experts = moe_cfg["n_experts"]
         self.top_k = moe_cfg["top_k"]
-        self.dispatch = moe_cfg.get("dispatch", "dense")
+        self.dispatch = moe_cfg.get("dispatch", "sorted")
         hidden = moe_cfg.get("expert_hidden", 4 * emb_dim)
 
         self.router = TopKRouter(emb_dim, self.n_experts, self.top_k,
@@ -110,7 +114,11 @@ class MoEFeedForward(nn.Module):
         weights, indices, probs = self.router(x_flat)   # (N, k), (N, k), (N, E)
         self.last_probs, self.last_indices = probs, indices
 
-        if self.dispatch == "dense":
+        if self.dispatch == "sorted":
+            out = self._dispatch_sorted(x_flat, weights, indices)
+        elif self.dispatch == "loop":
+            out = self._dispatch_loop(x_flat, weights, indices)
+        elif self.dispatch == "dense":
             out = self._dispatch_dense(x_flat, weights, indices)
         else:
             raise ValueError(f"dispatch desconocido: {self.dispatch}")
@@ -129,3 +137,47 @@ class MoEFeedForward(nn.Module):
         gates = gates.scatter(1, indices, weights)       # (N, E)
         # Suma ponderada sobre expertos: (N, E, 1) * (N, E, D) -> (N, D)
         return (gates.unsqueeze(-1) * all_out).sum(dim=1)
+
+    def _dispatch_loop(self, x_flat, weights, indices):
+        """Para cada experto, busca los tokens que lo han elegido (en cualquiera de
+        sus k posiciones), los procesa juntos y suma el resultado ponderado."""
+        out = torch.zeros_like(x_flat)                            # (N, D)
+        for e, expert in enumerate(self.experts):
+            # token_idx: qué tokens eligieron e; slot: en qué posición del top-k
+            token_idx, slot = torch.where(indices == e)           # (n_e,), (n_e,)
+            if token_idx.numel() == 0:
+                continue
+            y = expert(x_flat[token_idx])                         # (n_e, D)
+            y = y * weights[token_idx, slot].unsqueeze(-1)        # (n_e, D)
+            out.index_add_(0, token_idx, y)                       # suma en las filas de esos tokens
+        return out
+
+    def _dispatch_sorted(self, x_flat, weights, indices):
+        """Despacho eficiente: una sola ordenación agrupa las N·k asignaciones
+        (token, experto) por experto, cada experto procesa un bloque contiguo y
+        index_add_ devuelve cada resultado ponderado a la fila de su token."""
+        n_tokens, k = indices.shape
+
+        # Aplana las asignaciones: la asignación i es (token_ids[i] -> flat_experts[i])
+        flat_experts = indices.reshape(-1)                        # (N·k,)
+        flat_weights = weights.reshape(-1)                        # (N·k,)
+        token_ids = torch.arange(n_tokens, device=x_flat.device).repeat_interleave(k)  # (N·k,)
+
+        # Ordena por experto: las asignaciones de un mismo experto quedan contiguas
+        order = torch.argsort(flat_experts, stable=True)          # (N·k,)
+        sorted_tokens = token_ids[order]                          # (N·k,)
+        sorted_weights = flat_weights[order]                      # (N·k,)
+        # Cuántas asignaciones recibe cada experto (tamaño de cada bloque)
+        counts = torch.bincount(flat_experts, minlength=self.n_experts)  # (E,)
+
+        # Copia cada token tantas veces como expertos lo procesan, ya agrupado
+        x_sorted = x_flat[sorted_tokens]                          # (N·k, D)
+        chunks = x_sorted.split(counts.tolist())                  # E bloques (n_e, D)
+        y_sorted = torch.cat([expert(chunk) for expert, chunk in zip(self.experts, chunks)
+                              if chunk.shape[0] > 0])             # (N·k, D)
+        y_sorted = y_sorted * sorted_weights.unsqueeze(-1)        # (N·k, D)
+
+        # Devuelve cada fila a su token; los k resultados de un token se suman
+        out = torch.zeros_like(x_flat)                            # (N, D)
+        out.index_add_(0, sorted_tokens, y_sorted)
+        return out
