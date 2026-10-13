@@ -8,10 +8,12 @@
 #   B = batch, T = tokens, D = emb_dim, E = número de expertos,
 #   k = top_k (expertos activos por token), N = B * T (tokens aplanados)
 
+import re
+
 import torch
 import torch.nn as nn
 
-from model_base import GELU
+from model_base import GELU, GPTModel, TransformerBlock
 
 
 #####################################
@@ -206,3 +208,66 @@ class MoEFeedForward(nn.Module):
         out = torch.zeros_like(x_flat)                            # (N, D)
         out.index_add_(0, sorted_tokens, y_sorted)
         return out
+
+
+#####################################
+# Integración en el GPT del libro
+#####################################
+class MoETransformerBlock(TransformerBlock):
+    """Bloque del libro con el FeedForward denso sustituido por MoEFeedForward.
+    El forward (pre-norm, residuales, dropout) se hereda sin cambios."""
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.ff = MoEFeedForward(cfg)
+
+
+class GPTMoEModel(GPTModel):
+    """GPTModel con bloques MoE. Con cfg["moe"]["every_n_layers"] = n, solo uno de
+    cada n bloques es MoE (el n-ésimo, como en Switch/GShard); el resto, densos."""
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        every = cfg["moe"].get("every_n_layers", 1)
+        self.trf_blocks = nn.Sequential(*[
+            MoETransformerBlock(cfg) if (i + 1) % every == 0 else TransformerBlock(cfg)
+            for i in range(cfg["n_layers"])])
+
+    def moe_layers(self):
+        return [blk.ff for blk in self.trf_blocks if isinstance(blk.ff, MoEFeedForward)]
+
+    def aux_loss(self):
+        """Media de L_aux sobre las capas MoE (del último forward). Se promedia para
+        que el coeficiente no dependa del número de capas y 1 siga significando
+        'equilibrado'."""
+        return torch.stack([layer.aux_loss() for layer in self.moe_layers()]).mean()
+
+    def expert_stats(self):
+        """Asignaciones por experto en cada capa MoE del último forward: (L_moe, E)."""
+        return torch.stack([
+            torch.bincount(layer.last_indices.reshape(-1), minlength=layer.n_experts)
+            for layer in self.moe_layers()])
+
+
+def build_model(cfg):
+    """Modelo base si la configuración no tiene "moe"; GPTMoEModel si la tiene."""
+    return GPTMoEModel(cfg) if "moe" in cfg else GPTModel(cfg)
+
+
+def upcycle_from_dense(moe_model, dense_model):
+    """Sparse upcycling: copia todos los pesos de un GPTModel denso y replica su
+    FeedForward en cada experto. El router conserva su inicialización.
+
+    Si todos los expertos son iguales y los k pesos suman 1, la salida es la del
+    modelo denso: sum_j w_j * FFN(x) = FFN(x). Requiere expert_hidden = 4*emb_dim.
+    """
+    dense_sd = dense_model.state_dict()
+    new_sd = {}
+    for key, value in moe_model.state_dict().items():
+        if ".ff.router." in key:
+            new_sd[key] = value
+        else:
+            # trf_blocks.i.ff.experts.j.layers.X -> trf_blocks.i.ff.layers.X
+            new_sd[key] = dense_sd[re.sub(r"\.ff\.experts\.\d+\.", ".ff.", key)].clone()
+    moe_model.load_state_dict(new_sd)
+    return moe_model

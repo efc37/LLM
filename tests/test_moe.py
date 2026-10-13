@@ -3,8 +3,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from model_base import FeedForward
-from moe import MoEFeedForward, TopKRouter, load_balancing_loss
+from model_base import FeedForward, GPTModel, TransformerBlock
+from moe import (GPTMoEModel, MoEFeedForward, MoETransformerBlock, TopKRouter,
+                 build_model, load_balancing_loss, upcycle_from_dense)
 
 
 def small_cfg(**moe):
@@ -211,3 +212,72 @@ def test_aux_loss_gradient_rebalances_router(seed):
 
     assert before > 0.9
     assert after < 0.35
+
+
+def tiny_gpt_cfg(**moe):
+    cfg = {"vocab_size": 100, "context_length": 16, "emb_dim": 32, "n_heads": 4,
+           "n_layers": 4, "drop_rate": 0.0, "qkv_bias": False}
+    if moe:
+        cfg["moe"] = moe
+    return cfg
+
+
+def test_build_model_without_moe_is_base():
+    model = build_model(tiny_gpt_cfg())
+    assert type(model) is GPTModel
+
+
+@pytest.mark.parametrize("moe", [
+    dict(n_experts=1, top_k=1),                                # 1 experto ≡ FFN
+    dict(n_experts=4, top_k=2),                                # expertos idénticos, pesos suman 1
+    dict(n_experts=4, top_k=1, normalize_topk=True),
+    dict(n_experts=4, top_k=2, every_n_layers=2, dispatch="loop"),
+])
+def test_gpt_moe_upcycled_equals_base(moe):
+    """Prueba de extremo a extremo: GPTMoEModel inicializado desde un GPTModel
+    (cada experto = el FFN denso) da los mismos logits que el modelo base."""
+    torch.manual_seed(123)
+    base = GPTModel(tiny_gpt_cfg()).eval()
+    model = upcycle_from_dense(build_model(tiny_gpt_cfg(**moe)), base).eval()
+    assert type(model) is GPTMoEModel
+
+    idx = torch.randint(0, 100, (3, 16))
+    with torch.no_grad():
+        assert torch.allclose(model(idx), base(idx), atol=1e-5)
+
+
+def test_gpt_moe_k1_switch_is_not_dense():
+    """Control negativo: con k=1 sin renormalizar la salida es p·FFN(x) ≠ FFN(x)."""
+    torch.manual_seed(123)
+    base = GPTModel(tiny_gpt_cfg()).eval()
+    model = upcycle_from_dense(build_model(tiny_gpt_cfg(n_experts=4, top_k=1)), base).eval()
+    idx = torch.randint(0, 100, (3, 16))
+    with torch.no_grad():
+        assert not torch.allclose(model(idx), base(idx), atol=1e-3)
+
+
+def test_every_n_layers_alternates_blocks():
+    model = build_model(tiny_gpt_cfg(n_experts=4, top_k=2, every_n_layers=2))
+    kinds = [type(blk) for blk in model.trf_blocks]
+    assert kinds == [TransformerBlock, MoETransformerBlock, TransformerBlock, MoETransformerBlock]
+    assert len(model.moe_layers()) == 2
+
+
+def test_gpt_moe_aux_loss_and_stats():
+    torch.manual_seed(0)
+    model = build_model(tiny_gpt_cfg(n_experts=4, top_k=2))
+    idx = torch.randint(0, 100, (2, 16))
+    logits = model(idx)
+    assert logits.shape == (2, 16, 100)
+
+    stats = model.expert_stats()
+    assert stats.shape == (4, 4)                      # (capas MoE, expertos)
+    assert torch.all(stats.sum(dim=1) == 2 * 16 * 2)  # N·k asignaciones por capa
+
+    aux = model.aux_loss()
+    assert aux.dim() == 0 and 1.0 <= aux.item() <= 4.0
+    # El gradiente de (CE + coef·L_aux) llega al router de todas las capas
+    loss = torch.nn.functional.cross_entropy(logits.flatten(0, 1), idx.flatten()) + 0.01 * aux
+    loss.backward()
+    for layer in model.moe_layers():
+        assert layer.router.gate.weight.grad.abs().sum() > 0
