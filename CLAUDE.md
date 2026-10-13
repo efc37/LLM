@@ -45,7 +45,7 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 | 4 | Pérdida auxiliar de balanceo `load_balancing_loss` | hecho | e8d59b7 |
 | 5 | `MoETransformerBlock` + `GPTMoEModel` + `build_model` + `upcycle_from_dense` | hecho | ver git log |
 | 6 | Tiny Shakespeare (char-level) + `scripts/train_shakespeare.py` + `configs/` + `calc_loss_batch_moe` | hecho | ver git log |
-| 7 | `scripts/run_all.py`: denso vs MoE, ablación coef. aux {0, 0.01, 0.1}, tokens/s, uso de expertos, especialización | pendiente | |
+| 7 | `scripts/run_all.py`: denso vs MoE, ablación coef. aux {0, 0.01, 0.1}, tokens/s, uso de expertos, especialización | en curso (lanzado 13-oct) | b0dac07 |
 | 8 | Sección de la memoria | pendiente | |
 
 **Bloque 1 — Router top-k.** `gate = Linear(D, E, bias=False)`: x (N,D) → logits (N,E) → softmax `probs` (N,E) → `topk` → `indices` (N,k) y `weights` (N,k). `probs` se guarda para la pérdida auxiliar. `topk` no es derivable en los índices: el router aprende a través de los pesos (y de la pérdida auxiliar).
@@ -81,6 +81,22 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 - Configs: `configs/dense.json`, `moe_e4k1.json`, `moe_e4k2.json` (emb 128, 4 capas, 4 cabezas, ctx 128, batch 32, lr 1e-3, wd 0.1, 2000 pasos, coef aux 0.01).
 - Tests (`tests/test_train.py`): tokenizador ida y vuelta; entrenamiento corto con texto sintético para base y MoE; misma semilla ⇒ mismas pérdidas y misma muestra (reproducibilidad); fracciones de uso suman 1.
 - Prueba de humo (100 pasos, seed 1, NO es resultado de la memoria): denso 824,832 parámetros, 18.0k tok/s, val CE 2.506; MoE E4k2 2,407,424 totales / 1,353,728 activos, 11.7k tok/s, val CE 2.490, L_aux 1.03.
+
+**Bloque 7 — Batería de experimentos (lanzada el 13-oct, ~3 h 20 min en CPU).** Comando: `python scripts/run_all.py` (salta lo ya hecho; log en `results/run_all.log`). 6 configuraciones × semillas {1, 2, 3} = 18 entrenamientos de 2000 pasos (≈8.2M tokens cada uno), en secuencia para no falsear los tokens/s, y al final `scripts/bench_dispatch.py`.
+| Config | Qué es | Pregunta que responde | Parámetros totales / activos |
+|---|---|---|---|
+| `dense` | GPT del libro (FFN 128→512→128) | referencia | 824,832 / 824,832 |
+| `moe_e4k1` | MoE 4 expertos, k=1 (Switch), coef aux 0.01 | ¿mejora el MoE a igual cómputo por token? | 2,407,424 / 826,880 |
+| `moe_e4k2` | MoE 4 expertos, k=2 (Mixtral), coef 0.01 | ¿cuánto aporta un segundo experto activo? | 2,407,424 / 1,353,728 |
+| `dense_wide` | denso con FFN 4× más ancho (hidden 2048) | ¿el MoE se acerca a un denso con los mismos parámetros totales pero 4× más cómputo en el FFN? | 2,404,352 / 2,404,352 |
+| `moe_e4k1_aux0` | como e4k1 sin pérdida de balanceo | ¿colapsa el router sin L_aux? | igual que e4k1 |
+| `moe_e4k1_aux0.1` | como e4k1 con coef 0.1 | ¿un balanceo fuerte perjudica la CE? | igual que e4k1 |
+- `dense_wide` se implementa como MoE de 1 experto con hidden 2048 (probado equivalente a un FFN denso en el bloque 5; el router no recibe gradiente porque el peso es siempre 1). Su tokens/s incluye el pequeño sobrecoste del despacho.
+- Velocidades medidas en pruebas cortas: dense 18.0k, e4k1 17.2k, e4k2 11.7k, dense_wide 6.3k tok/s.
+- `bench_dispatch.py`: forward+backward de FFN denso vs MoE {E4k1, E4k2, E8k1, E8k2} × despachos {dense, loop, sorted}, 4096 tokens, D=128, mediana de 30 repeticiones → `results/dispatch_bench.json`.
+- Los pesos se guardan en `checkpoints/` (no versionado) para el análisis de especialización (qué caracteres van a cada experto), que se hará después.
+- Mientras corre, no usar el PC para cosas pesadas (falsea los tokens/s).
+- Pendiente: script de análisis (tablas media ± desviación, curvas de val CE, uso de expertos por capa) → resultados citables en la memoria.
 
 **Preguntas de repaso (tipo examen)**
 - E=8, k=2, batch 4×64: shapes de `probs`, `indices`, `weights`. ¿Y de `flat_experts`, `x_sorted`, `counts`? ¿Cuánto suma `counts`?
