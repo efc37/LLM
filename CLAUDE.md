@@ -22,7 +22,13 @@ Práctica grupal (4 personas) de Procesamiento del Lenguaje Natural I, Grado en 
 5. Tareas sintéticas, p. ej. associative recall (`A: 3, B: 7, C: 1, ... QUERY B ->` debe dar alta probabilidad a `7`).
 
 ## Estado del proyecto (rellenar / verificar)
-- Ampliaciones elegidas por el equipo: a 13-oct-2026 no hay ninguna empezada en el repo (solo `src/ampliacion_X.py` y `experimentos/0X_.ipynb` vacíos como esqueleto). Base hecha: `src/model_base.py` (caps. 2–6) y notebooks `base/ch02–ch06` (ch02–ch03 comentados).
+- Ampliaciones elegidas por el equipo (actualizado 16-oct-2026, commit `c257b2d` de aos35 en `main`, 13-oct): **codificaciones posicionales y generalización de longitud** (Kazemnejad et al., 2023, arXiv:2305.19466; PDF `NoPE.pdf` en la raíz).
+  - `src/positional.py`: variantes intercambiables `learned` (la del libro), `sinusoidal`, `nope` (sin codificación), `rope`, `alibi`, `t5` (sesgo relativo); híbrido **RoPE/NoPE por capas** (`nope_every=N`: las capas N, 2N… sin codificación; etiquetas `rope_nopeN` en `src/pe_labels.py`).
+  - `src/model_base_adaptado.py`: copia ampliada del base (CharTokenizer, `pretrain`, dataloaders con semilla, pérdida que ignora -100). `src/model_ext.py`: `GPTModelExt`/`TransformerBlockExt` (su bloque tiene `self.ff = FeedForward(cfg)` como el del libro → el MoE se puede enchufar ahí).
+  - Experimentos: `src/tasks.py` + `src/train_eval.py` (tareas sintéticas copy/reverse/sort/sum_mod/parity/addition/assoc_recall, entrenar con longitudes cortas y evaluar más largas) y `src/context_ppl.py` (perplejidad en Tiny Shakespeare con contextos de 32 a 1024 entrenando con 128). Resultados en `runs/`. `src/validate_rope_hf.py` valida RoPE contra Hugging Face (requiere `transformers`).
+  - Su configuración pequeña coincide casi con la mía (emb 128, 4 capas, 4 cabezas, ctx 128, batch 32, lr 1e-3, wd 0.1; ellos drop 0.1, yo 0.0) y usan el mismo `tinyshakespeare.txt` (mismo SHA-1).
+  - Ojo: el profesor descartó RoPE; ellos lo usan como variante y en el híbrido. Confirmar con el equipo que el enfoque (NoPE/ALiBi/T5/híbrido y generalización de longitud) es lo que presentan.
+- Integración: el 16-oct se fusionó `main` en `feat/moe` en local (merge `31ebcc2`, sin conflictos: ningún fichero en común; `model_base.py` solo cambió comentarios). Tras la fusión: mis 61 tests y sus 101 autocomprobaciones (`positional`, `model_ext`, `pe_labels`, `tasks`) pasan.
 - Reparto de tareas entre miembros: _(pendiente de confirmar con el equipo)_
 - Mi parte como colaborador: **Mixture of Experts (MoE)** en la rama `feat/moe`. Ver bitácora abajo. Extra opcional (solo si MoE está cerrado ~19-oct y nadie lo ha cogido): GQA + KV cache + atención de ventana deslizante.
 
@@ -47,6 +53,7 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 | 6 | Tiny Shakespeare (char-level) + `scripts/train_shakespeare.py` + `configs/` + `calc_loss_batch_moe` | hecho | ver git log |
 | 7 | `scripts/run_all.py`: denso vs MoE, ablación coef. aux {0, 0.01, 0.1}, tokens/s, uso de expertos, especialización | hecho | b0dac07, 5374c23 |
 | 8 | Sección de la memoria | pendiente | |
+| 9 | Unir MoE al modelo del equipo (`GPTModelExt`): MoE + codificaciones posicionales | propuesto (16-oct) | |
 
 **Bloque 1 — Router top-k.** `gate = Linear(D, E, bias=False)`: x (N,D) → logits (N,E) → softmax `probs` (N,E) → `topk` → `indices` (N,k) y `weights` (N,k). `probs` se guarda para la pérdida auxiliar. `topk` no es derivable en los índices: el router aprende a través de los pesos (y de la pérdida auxiliar).
 
