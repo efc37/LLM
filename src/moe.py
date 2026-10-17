@@ -77,6 +77,29 @@ def load_balancing_loss(probs, indices, n_experts):
     return n_experts * torch.sum(f * P)
 
 
+class _AuxLossInjector(torch.autograd.Function):
+    """Aplica la pérdida auxiliar sin tocar el bucle de entrenamiento.
+
+    Forward: devuelve `output` tal cual (identidad).
+    Backward: además del gradiente de `output`, propaga dL/dL_aux = coef, es decir,
+    añade coef * dL_aux/dθ a los gradientes del router. El resultado es idéntico a
+    optimizar CE + coef * L_aux, pero funciona con cualquier bucle que solo calcule
+    la entropía cruzada (p. ej. model_base_adaptado.pretrain del equipo).
+    Es la misma técnica que MoEAuxLossAutoScaler de Megatron-LM (NVIDIA).
+    """
+
+    @staticmethod
+    def forward(ctx, output, aux_loss, coef):
+        ctx.save_for_backward(aux_loss)
+        ctx.coef = coef
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (aux_loss,) = ctx.saved_tensors
+        return grad_output, torch.full_like(aux_loss, ctx.coef), None
+
+
 #####################################
 # Expertos y capa MoE
 #####################################
@@ -129,6 +152,9 @@ class MoEFeedForward(nn.Module):
         # Se rellenan en cada forward; los usan la pérdida auxiliar y las estadísticas
         self.last_probs = None    # (N, E)
         self.last_indices = None  # (N, k)
+        # Coeficiente con el que la propia capa inyecta L_aux en el backward (0 = no la
+        # inyecta y hay que sumarla a mano a la pérdida, como hace calc_loss_batch_moe)
+        self.aux_inject_coef = 0.0
 
     def forward(self, x):
         b, num_tokens, emb_dim = x.shape
@@ -146,7 +172,10 @@ class MoEFeedForward(nn.Module):
         else:
             raise ValueError(f"dispatch desconocido: {self.dispatch}")
 
-        return out.view(b, num_tokens, emb_dim)         # (B, T, D)
+        out = out.view(b, num_tokens, emb_dim)          # (B, T, D)
+        if self.aux_inject_coef > 0 and self.training and torch.is_grad_enabled():
+            out = _AuxLossInjector.apply(out, self.aux_loss(), self.aux_inject_coef)
+        return out
 
     def aux_loss(self):
         """Pérdida de balanceo del último forward."""
@@ -234,19 +263,17 @@ class GPTMoEModel(GPTModel):
             for i in range(cfg["n_layers"])])
 
     def moe_layers(self):
-        return [blk.ff for blk in self.trf_blocks if isinstance(blk.ff, MoEFeedForward)]
+        return moe_layers(self)
 
     def aux_loss(self):
         """Media de L_aux sobre las capas MoE (del último forward). Se promedia para
         que el coeficiente no dependa del número de capas y 1 siga significando
         'equilibrado'."""
-        return torch.stack([layer.aux_loss() for layer in self.moe_layers()]).mean()
+        return moe_aux_loss(self)
 
     def expert_stats(self):
         """Asignaciones por experto en cada capa MoE del último forward: (L_moe, E)."""
-        return torch.stack([
-            torch.bincount(layer.last_indices.reshape(-1), minlength=layer.n_experts)
-            for layer in self.moe_layers()])
+        return moe_expert_stats(self)
 
 
 def build_model(cfg):
@@ -254,9 +281,53 @@ def build_model(cfg):
     return GPTMoEModel(cfg) if "moe" in cfg else GPTModel(cfg)
 
 
+#####################################
+# Utilidades genéricas: valen para cualquier modelo con capas MoEFeedForward
+# (GPTMoEModel, o el GPTModelExt del equipo tras attach_moe)
+#####################################
+def moe_layers(model):
+    """Capas MoE del modelo, en orden de profundidad."""
+    return [m for m in model.modules() if isinstance(m, MoEFeedForward)]
+
+
+def moe_aux_loss(model):
+    """Media de L_aux sobre las capas MoE del último forward."""
+    return torch.stack([layer.aux_loss() for layer in moe_layers(model)]).mean()
+
+
+def moe_expert_stats(model):
+    """Asignaciones por experto en cada capa MoE del último forward: (L_moe, E)."""
+    return torch.stack([
+        torch.bincount(layer.last_indices.reshape(-1), minlength=layer.n_experts)
+        for layer in moe_layers(model)])
+
+
+def attach_moe(model, cfg, inject_aux_loss=False):
+    """Sustituye el FeedForward de los bloques (`model.trf_blocks[i].ff`) por
+    MoEFeedForward según cfg["moe"], respetando every_n_layers.
+
+    Sirve para cualquier GPT cuyos bloques guarden su FFN en `.ff`: el del libro y
+    el GPTModelExt del equipo (codificaciones posicionales). Con inject_aux_loss=True
+    cada capa inyecta en el backward aux_loss_coef / L_moe · L_aux (ver
+    _AuxLossInjector): el total equivale a CE + aux_loss_coef · media de L_aux, igual
+    que en calc_loss_batch_moe, sin cambiar el bucle de entrenamiento.
+    """
+    moe_cfg = cfg["moe"]
+    every = moe_cfg.get("every_n_layers", 1)
+    for i, block in enumerate(model.trf_blocks):
+        if (i + 1) % every == 0:
+            block.ff = MoEFeedForward(cfg)
+    if inject_aux_loss:
+        layers = moe_layers(model)
+        for layer in layers:
+            layer.aux_inject_coef = moe_cfg.get("aux_loss_coef", 0.0) / len(layers)
+    return model
+
+
 def upcycle_from_dense(moe_model, dense_model):
-    """Sparse upcycling: copia todos los pesos de un GPTModel denso y replica su
-    FeedForward en cada experto. El router conserva su inicialización.
+    """Sparse upcycling: copia todos los pesos de un modelo denso (GPTModel del libro o
+    GPTModelExt del equipo) y replica su FeedForward en cada experto. El router
+    conserva su inicialización.
 
     Si todos los expertos son iguales y los k pesos suman 1, la salida es la del
     modelo denso: sum_j w_j * FFN(x) = FFN(x). Requiere expert_hidden = 4*emb_dim.
@@ -280,12 +351,14 @@ def calc_loss_batch_moe(input_batch, target_batch, model, device, aux_loss_coef=
     """Como calc_loss_batch del cap. 5, más el término de balanceo si el modelo es MoE.
 
     Devuelve (pérdida total, entropía cruzada, L_aux); L_aux = 0 en el modelo base.
+    No usar aux_loss_coef > 0 con capas que ya inyectan L_aux (attach_moe con
+    inject_aux_loss=True): se contaría dos veces.
     """
     input_batch, target_batch = input_batch.to(device), target_batch.to(device)
     logits = model(input_batch)                                   # (B, T, V)
     ce = torch.nn.functional.cross_entropy(logits.flatten(0, 1), target_batch.flatten())
-    if isinstance(model, GPTMoEModel):
-        aux = model.aux_loss()
+    if moe_layers(model):
+        aux = moe_aux_loss(model)
     else:
         aux = torch.zeros((), device=ce.device)
     return ce + aux_loss_coef * aux, ce, aux
