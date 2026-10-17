@@ -220,3 +220,4 @@ __marimo__/
 # Datos descargados por los scripts de experimentos
 data/
 checkpoints/
+runs/context_moe/ckpt/
