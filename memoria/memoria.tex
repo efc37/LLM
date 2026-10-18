@@ -38,7 +38,7 @@ Ampliamos el GPT de los capítulos 2--6 de \citet{raschka2024build} en dos direc
 En la atención, una interfaz de codificaciones posicionales intercambiables (APE aprendida y sinusoidal, NoPE, ALiBi, sesgo relativo de T5 y un híbrido por capas) con la que estudiamos la generalización a longitudes no vistas.
 En el feed-forward, una capa \emph{Mixture of Experts} (MoE) con router top-$k$, despacho de tokens por ordenación y pérdida de balanceo de carga.
 Ambas se validan numéricamente contra PyTorch y Hugging Face (Llama, T5, Mixtral y Switch Transformer) y se evalúan entrenando desde cero en Tiny Shakespeare.
-ALiBi mantiene la perplejidad hasta 8$\times$ la longitud de entrenamiento; el MoE reduce la entropía cruzada en 0.05 nats con el mismo cómputo por token; y al combinarlas \TODO{resultado combinado}.
+ALiBi mantiene la perplejidad hasta 8$\times$ la longitud de entrenamiento; el MoE reduce la entropía cruzada en 0.05 nats con el mismo cómputo por token; y, combinados, el MoE mejora con todas las codificaciones pero solo conserva su ventaja al extrapolar con ALiBi: con NoPE, su router concentra en un único experto el 86\% de los tokens de las posiciones no vistas.
 \end{abstract}
 
 \section{Introducción}
@@ -141,18 +141,18 @@ donde $f_i$ es la fracción de las $Nk$ asignaciones que recibe el experto $i$ (
 
 \begin{table}[t]
 \centering\footnotesize\setlength{\tabcolsep}{3pt}
-\begin{tabular}{@{}p{5.9cm}r@{}}
+\begin{tabular}{@{}p{6.3cm}r@{}}
 \toprule
 Comprobación (referencia) & Error máx. \\
 \midrule
-Atención NoPE/ALiBi/RoPE (SDPA de PyTorch) & $\le10^{-5}$ \\
+Atención NoPE/ALiBi/RoPE (SDPA, PyTorch) & $\le10^{-5}$ \\
 RoPE (Llama, HF); cubetas de T5 (T5, HF) & 0 \\
 MoE top-$k$ renormalizado (Mixtral, HF) & $8\cdot10^{-7}$ \\
 MoE top-1 sin renormalizar (Switch, HF) & 0 \\
 $\mathcal{L}_{\mathrm{aux}}$ y z-loss (HF; $\mathcal{L}^{\mathrm{HF}}_{\mathrm{aux}} = k\,\mathcal{L}_{\mathrm{aux}}$) & $\le10^{-6}$ \\
-Despachos \code{sorted}/\code{loop} (denso, con gradientes) & $\le10^{-5}$ \\
+Despachos \code{sorted}/\code{loop} (denso; gradientes) & $\le10^{-5}$ \\
 $E{=}1$ (FFN del libro); $k{=}E$ (mezcla softmax) & $\le10^{-5}$ \\
-GPT con MoE \emph{upcycled} (denso, 6 codificaciones) & $\le10^{-5}$ \\
+GPT con MoE \emph{upcycled} (denso, 6 codif.) & $\le10^{-5}$ \\
 Inyección de $\mathcal{L}_{\mathrm{aux}}$ (CE$+\alpha\mathcal{L}_{\mathrm{aux}}$ explícita) & $\le10^{-6}$ \\
 \bottomrule
 \end{tabular}
@@ -212,10 +212,10 @@ El bucle de entrenamiento del protocolo P1 solo optimiza la CE; en lugar de modi
 \cmidrule(lr){2-4}\cmidrule(l){5-6}
 Codificación & denso & MoE & $\Delta$ & denso & MoE \\
 \midrule
-APE aprendida & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
-NoPE & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
-ALiBi & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
-T5 & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
+APE aprendida & 1.831 & 1.772 & $-0.059$\pmsd{.010} & 21.66 & 24.45 \\
+NoPE & 2.009 & 1.971 & $-0.038$\pmsd{.024} & 13.74 & 15.89 \\
+ALiBi & 1.759 & \textbf{1.694} & $-0.065$\pmsd{.007} & 5.60 & \textbf{5.17} \\
+T5 & 1.772 & 1.723 & $-0.049$\pmsd{.006} & 13.87 & 15.01 \\
 \bottomrule
 \end{tabular}
 \caption{Protocolo P1 con FFN denso y MoE ($E{=}4$, $k{=}1$, $\alpha{=}0.01$, inyectada): 3 semillas emparejadas por codificación. $\Delta$CE: MoE menos denso con la misma semilla.}
@@ -224,15 +224,16 @@ T5 & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
 
 \paragraph{Resultados.}
 Repetimos el protocolo P1 con FFN denso y MoE para cuatro codificaciones, emparejando semillas en una misma máquina (Tabla~\ref{tab:combo}, Figura~\ref{fig:main}a).
-\TODO{resultados combinados}
-La Figura~\ref{fig:main}b muestra el porqué en NoPE: el router de la capa 2, equilibrado en las posiciones vistas, envía \TODO{x} de los tokens de las posiciones 896--1023 a un único experto. La señal de posición absoluta que NoPE reconstruye a partir de la máscara causal \citep{kazemnejad2023impact} sale de su rango y el router la convierte en un desequilibrio de carga; con ALiBi, cuyo sesgo es relativo, \TODO{y T5} el reparto apenas cambia.
-Nuestras ejecuciones densas difieren ligeramente de las del equipo (p.\,ej., NoPE: \TODO{x} frente a 2.01) aunque su modelo evaluado con nuestro código reproduce su cifra: la diferencia nace del entorno de entrenamiento, así que solo comparamos ejecuciones emparejadas.
+El MoE mejora la CE con las cuatro (de $-0.038$ a $-0.065$ nats; las 12 comparaciones emparejadas le favorecen), pero la extrapolación la sigue decidiendo la codificación: con ALiBi la mejora se conserva intacta hasta 1024 (5.60$\to$5.17), con la APE aprendida y NoPE el MoE extrapola peor que el denso en las tres semillas, y con T5 el efecto no es consistente.
+La Figura~\ref{fig:main}b apunta a un mecanismo en NoPE: el router de la capa 2 (la 3 en una semilla), equilibrado en las posiciones vistas, asigna el 86\% de los tokens de las posiciones 896--1023 a un único experto (con ALiBi, el 29\%).
+El logit de ese experto crece con la posición (correlación 0.52, frente a 0.02 con ALiBi): la señal de posición absoluta que NoPE reconstruye a partir de la máscara causal \citep{kazemnejad2023impact} sale de su rango y, como el enrutado top-1 es discreto, subir su probabilidad media de 0.24 a 0.40 basta para reasignar casi todos los tokens.
+Nuestras ejecuciones densas reproducen las medias del equipo con diferencias $\le$0.011 nats, aunque no semilla a semilla (su modelo evaluado con nuestro código sí da su cifra exacta); por eso solo comparamos ejecuciones emparejadas.
 
 \section{Conclusiones y limitaciones}
 Las dos ampliaciones atacan limitaciones distintas del modelo del libro y se componen sin tocar el código de ninguna.
 La codificación posicional decide si el modelo extrapola: ALiBi mantiene la perplejidad hasta 8$\times$ la longitud de entrenamiento y NoPE ordena perfectamente secuencias más largas que las vistas.
 El MoE, validado contra Mixtral y Switch, añade capacidad a cómputo constante: $-0.05$ nats con $k{=}1$ y entre el 72 y el 93\% de la mejora de un modelo denso con los mismos parámetros, de 1.9 a 2.75$\times$ más rápido.
-Al combinarlas, \TODO{conclusión combinada}: el router actúa como detector de representaciones fuera de distribución.
+Al combinarlas, el MoE mejora con todas las codificaciones pero solo conserva su ventaja al extrapolar cuando la codificación mantiene estables las representaciones (ALiBi); con NoPE, el router actúa como un detector de representaciones fuera de distribución y concentra la carga en un experto.
 \textbf{Limitaciones:} modelos diminutos entrenados en CPU con un único corpus por caracteres; presupuesto fijo, no convergencia; 3 semillas (diferencias menores de $\sim$0.01 nats no son concluyentes); tres tareas sintéticas no se aprenden ni en las longitudes vistas; y los tiempos son de CPU (en GPU el desequilibrio de carga es más costoso).
 Quedan como trabajo futuro la capacidad máxima por experto, los expertos compartidos \citep{dai2024deepseekmoe} y un enrutado robusto a la posición.
 
