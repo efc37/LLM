@@ -9,7 +9,7 @@
 #   {"name": ..., "model": {cfg del GPT, con "moe" opcional},
 #    "train": {"steps", "batch_size", "lr", "weight_decay", "eval_every", "eval_batches"}}
 # vocab_size se rellena con el del corpus. El coeficiente de la pérdida auxiliar va
-# en model.moe.aux_loss_coef.
+# en model.moe.aux_loss_coef y el de la router z-loss (opcional) en model.moe.z_loss_coef.
 
 import argparse
 import json
@@ -116,6 +116,7 @@ def train(config, seed, text=None, steps=None, verbose=True, prompt="ROMEO:", re
     if steps is not None:
         tcfg["steps"] = steps
     aux_coef = cfg.get("moe", {}).get("aux_loss_coef", 0.0)
+    z_coef = cfg.get("moe", {}).get("z_loss_coef", 0.0)     # router z-loss (0 = desactivada)
 
     torch.manual_seed(seed)
     model = build_model(cfg)
@@ -136,7 +137,7 @@ def train(config, seed, text=None, steps=None, verbose=True, prompt="ROMEO:", re
 
         t0 = time.perf_counter()
         optimizer.zero_grad()
-        loss, ce, aux = calc_loss_batch_moe(x, y, model, "cpu", aux_coef)
+        loss, ce, aux = calc_loss_batch_moe(x, y, model, "cpu", aux_coef, z_coef)
         loss.backward()
         optimizer.step()
         train_time += time.perf_counter() - t0

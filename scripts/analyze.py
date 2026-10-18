@@ -28,6 +28,7 @@ LABELS = {
     "dense_wide": "Denso ancho (FFN 4x)",
     "moe_e4k1_aux0": "MoE E=4 k=1, coef. aux 0",
     "moe_e4k1_aux0.1": "MoE E=4 k=1, coef. aux 0.1",
+    "moe_e4k1_z": "MoE E=4 k=1, z-loss 0.001",
 }
 
 # Paleta categórica de referencia (slots 1-4 en orden fijo), validada con el

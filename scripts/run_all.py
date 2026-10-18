@@ -6,7 +6,8 @@
 #
 #   python scripts/run_all.py
 #
-# Al final genera results/summary.{json,md}, las figuras y el análisis de especialización.
+# Al final genera results/summary.{json,md}, las figuras, el análisis de especialización y el
+# estado de los routers (router_stats).
 
 import argparse
 import os
@@ -22,6 +23,7 @@ CONFIGS = [
     "dense_wide",       # denso con los mismos parámetros totales que E=4
     "moe_e4k1_aux0",    # ablación: sin pérdida de balanceo
     "moe_e4k1_aux0.1",  # ablación: pérdida de balanceo 10 veces mayor
+    "moe_e4k1_z",       # ablación: router z-loss (coef. 0.001) además del balanceo
 ]
 SEEDS = [1, 2, 3]
 
@@ -52,6 +54,7 @@ def main():
     for name in ["moe_e4k1", "moe_e4k1_aux0"]:
         subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "specialization.py"),
                         "--name", name], check=True)
+    subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "router_stats.py")], check=True)
 
 
 if __name__ == "__main__":
