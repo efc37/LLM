@@ -180,6 +180,24 @@ def summarize(results):
             entry["max_expert_load_first_bucket"] = mean_std(
                 [max(max(layer["fractions"][0]) for layer in r["routing"]["layers"]) for r in rs])
         summary[f"{pe}|{ffn}"] = entry
+
+    # Diferencias emparejadas MoE - denso con la misma codificación y semilla
+    by_key = {(r["pos_encoding"], r["ffn"], r["seed"]): r for r in results}
+    for (pe, ffn), _ in groups.items():
+        if ffn == "dense":
+            continue
+        seeds = [s for s in summary[f"{pe}|{ffn}"]["seeds"] if (pe, "dense", s) in by_key]
+        if not seeds:
+            continue
+        pairs = [(by_key[(pe, ffn, s)], by_key[(pe, "dense", s)]) for s in seeds]
+        delta = {"seeds": seeds,
+                 "val_loss_train_ctx": mean_std([m["val_loss_train_ctx"] - d["val_loss_train_ctx"] for m, d in pairs]),
+                 "ppl_last": {}}
+        for c in summary[f"{pe}|{ffn}"]["ppl"]["last"]:
+            vals = [m["ppl"]["last"][str(c)] - d["ppl"]["last"][str(c)] for m, d in pairs
+                    if m["ppl"]["last"][str(c)] is not None and d["ppl"]["last"][str(c)] is not None]
+            delta["ppl_last"][c] = mean_std(vals) if vals else None
+        summary[f"{pe}|{ffn}"]["paired_delta_vs_dense"] = delta
     return summary
 
 
@@ -201,6 +219,18 @@ def markdown(summary, metric="last"):
         lines.append(f"| {e['pos_encoding']} | {e['ffn']} | {e['n_params']:,}/{e['n_params_active']:,} "
                      f"| {e['val_loss_train_ctx'][0]:.4f} ± {e['val_loss_train_ctx'][1]:.4f} | "
                      + " | ".join(cells) + f" | {e['train_tokens_per_s'][0]:,.0f} |")
+    paired = [e for e in entries if "paired_delta_vs_dense" in e]
+    if paired and metric == "last":
+        lines += ["", "## Diferencia emparejada MoE − denso (misma codificación y semilla), media ± desv. típica", "",
+                  "| Codificación | FFN | semillas | Δ CE val | " + " | ".join(f"Δ ppl ctx {c}" for c in contexts) + " |",
+                  "|---|---|---|---|" + "---|" * len(contexts)]
+        for e in paired:
+            d = e["paired_delta_vs_dense"]
+            cells = ["-" if d["ppl_last"].get(c) is None else f"{d['ppl_last'][c][0]:+.2f} ± {d['ppl_last'][c][1]:.2f}"
+                     for c in contexts]
+            lines.append(f"| {e['pos_encoding']} | {e['ffn']} | {len(d['seeds'])} | "
+                         f"{d['val_loss_train_ctx'][0]:+.4f} ± {d['val_loss_train_ctx'][1]:.4f} | "
+                         + " | ".join(cells) + " |")
     routed = [e for e in entries if "routing_tv_last_bucket" in e]
     if routed and metric == "last":
         lines += ["", "## Reparto del router por posición (MoE): distancia de variación total frente a las "

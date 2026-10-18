@@ -1,0 +1,244 @@
+% Memoria de la Práctica 1 de PLN I (Universitat d'Alacant), formato ACL.
+% Compilar:  tectonic memoria.tex   (o pdflatex + bibtex, o subir la carpeta a Overleaf)
+% Todas las cifras salen de results/, runs/ y de los tests del repositorio.
+\documentclass[11pt]{article}
+\usepackage[final]{acl}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish,es-tabla,es-nodecimaldot,es-noshorthands]{babel}
+\usepackage{microtype}
+\usepackage{inconsolata}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage{etoolbox}
+\patchcmd{\thebibliography}{References}{Referencias}{}{}
+\patchcmd{\thebibliography}{{References}}{{Referencias}}{}{}
+\patchcmd{\thebibliography}{{References}}{{Referencias}}{}{}
+
+\newcommand{\TODO}[1]{\textcolor{red}{[#1]}}
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\pmsd}[1]{{\scriptsize$\pm$#1}}
+
+\title{Más allá del GPT del libro: codificaciones posicionales\\para generalizar en longitud y \emph{Mixture of Experts}}
+
+\author{María Mestre Sánchez \quad Elena Fernández Cebrián \quad David \TODO{apellidos} \quad \TODO{nombre} (aos35) \\
+  Procesamiento del Lenguaje Natural I, Grado en Ingeniería en Inteligencia Artificial \\
+  Universitat d'Alacant}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Ampliamos el GPT de los capítulos 2--6 de \citet{raschka2024build} en dos direcciones que tocan módulos distintos del bloque transformer.
+En la atención, una interfaz de codificaciones posicionales intercambiables (APE aprendida y sinusoidal, NoPE, ALiBi, sesgo relativo de T5 y un híbrido por capas) con la que estudiamos la generalización a longitudes no vistas.
+En el feed-forward, una capa \emph{Mixture of Experts} (MoE) con router top-$k$, despacho de tokens por ordenación y pérdida de balanceo de carga.
+Ambas se validan numéricamente contra PyTorch y Hugging Face (Llama, T5, Mixtral y Switch Transformer) y se evalúan entrenando desde cero en Tiny Shakespeare.
+ALiBi mantiene la perplejidad hasta 8$\times$ la longitud de entrenamiento; el MoE reduce la entropía cruzada en 0.05 nats con el mismo cómputo por token; y al combinarlas \TODO{resultado combinado}.
+\end{abstract}
+
+\section{Introducción}
+El modelo del libro usa una codificación posicional absoluta aprendida y un feed-forward (FFN) denso.
+Los LLM actuales sustituyen ambas piezas \citep{raschka2025comparison}: codificaciones relativas o ausentes para extrapolar a contextos largos, y capas MoE para multiplicar los parámetros sin multiplicar el cómputo \citep{shazeer2017outrageously,lepikhin2021gshard,fedus2022switch,jiang2024mixtral}.
+Nuestras contribuciones son:
+(1) una interfaz de tres ganchos que permite cambiar la codificación posicional sin tocar el resto del modelo (\S\ref{sec:pe});
+(2) una capa MoE completa con validación contra implementaciones de referencia (\S\ref{sec:moe});
+(3) la composición de ambas sin modificar el código de ninguna (\S\ref{sec:combo}); y
+(4) una batería reproducible: 127 tests automáticos y 101 autocomprobaciones, y experimentos que se relanzan con un único comando por bloque.
+RoPE \citep{su2024roformer}, descartada como ampliación por indicación del profesor, aparece solo como referencia.
+
+\section{Modelo base y protocolo}
+\label{sec:base}
+Partimos del GPT \emph{pre-norm} del libro con 4 capas, $D{=}128$, 4 cabezas y contexto 128 ($\approx$0.82M parámetros), entrenado desde cero a nivel de carácter en Tiny Shakespeare \citep{karpathy2015charrnn} (1.1M caracteres, 65 símbolos, 90/10 entrenamiento/validación) con AdamW ($\eta{=}10^{-3}$, decaimiento 0.1, lotes de 32).
+Usamos dos protocolos, siempre con 3 semillas y en CPU:
+\textbf{P1} (codificaciones posicionales): 5 épocas sobre ventanas de 128 sin solapar ($\approx$1225 pasos), \emph{dropout} 0.1, y perplejidad de los últimos 32 tokens de ventanas de 32 a 1024 tokens (8$\times$ la longitud de entrenamiento);
+\textbf{P2} (MoE): 2000 pasos sobre trozos aleatorios (8.2M tokens), sin \emph{dropout}, y entropía cruzada (CE, en nats) sobre 20 lotes de validación fijos.
+Las tablas dan media $\pm$ desviación típica muestral.
+Ninguna ampliación modifica \code{model\_base.py}: se activan por configuración y el modelo base sigue disponible como referencia.
+
+\section{Codificaciones posicionales}
+\label{sec:pe}
+\paragraph{Formulación.}
+Cada codificación implementa tres ganchos con identidad por defecto: \code{add\_to\_embeddings} (APE), \code{apply\_qk} (rota $q,k$; RoPE) y \code{attn\_bias} (sesgo aditivo; ALiBi, T5). La puntuación de la cabeza $h$ entre la consulta $i$ y la clave $j\le i$ es
+\begin{equation}
+s^h_{ij} = \frac{(R_i q_i)^\top (R_j k_j)}{\sqrt{d_h}} + b_h(i-j),
+\end{equation}
+seguida de la máscara causal y el softmax.
+Con APE (aprendida o sinusoidal; \citealp{vaswani2017attention}) $R{=}I$, $b{=}0$ y se suma $p_t$ al embedding.
+NoPE no usa nada: el orden solo entra por la máscara causal \citep{kazemnejad2023impact}.
+ALiBi usa $b_h(\Delta) = -m_h \Delta$ con $m_h = 2^{-8h/H}$ \citep{press2022alibi}; T5, un escalar aprendido por cabeza y cubeta de distancia (16 exactas y 16 logarítmicas hasta 128; \citealp{raffel2020t5}).
+El híbrido \code{rope\_nopeN} quita la codificación a una de cada $N$ capas \citep{yang2025rope}.
+
+\paragraph{Validación.}
+La atención con NoPE, ALiBi y RoPE coincide con \code{scaled\_dot\_product\_attention} de PyTorch \citep{paszke2019pytorch} (con el sesgo como máscara); RoPE coincide con una referencia en aritmética compleja y con la de Llama en \code{transformers} \citep{wolf2020transformers} (error 0), y las cubetas de T5 con las de Hugging Face. Con la APE aprendida y los pesos del modelo base, el modelo extendido reproduce exactamente sus logits (Tabla~\ref{tab:val}).
+
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{2.8pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & CE val & \multicolumn{4}{c}{Perplejidad (últimos 32 tokens)} \\
+\cmidrule(l){3-6}
+Codificación & ctx 128 & 128 & 256 & 512 & 1024 \\
+\midrule
+APE aprendida & 1.820 & 6.02 & 23.73 & 22.15 & --$^a$ \\
+APE sinusoidal & 1.813 & 5.88 & 23.17 & 24.42 & 23.09 \\
+NoPE & 2.011 & 7.50 & 11.03 & 13.32 & 13.94 \\
+ALiBi & 1.757 & 5.57 & \textbf{5.58} & \textbf{5.58} & \textbf{5.59} \\
+T5 & 1.772 & 5.67 & 6.34 & 9.40 & 13.46 \\
+\midrule
+\textcolor{gray}{RoPE (ref.)} & \textcolor{gray}{1.677} & \textcolor{gray}{5.07} & \textcolor{gray}{13.90} & \textcolor{gray}{24.57} & \textcolor{gray}{42.03} \\
+\textcolor{gray}{Híbrido, $N{=}4$} & \textcolor{gray}{1.698} & \textcolor{gray}{5.20} & \textcolor{gray}{15.97} & \textcolor{gray}{27.09} & \textcolor{gray}{43.92} \\
+\bottomrule
+\end{tabular}
+\caption{Protocolo P1: entrenadas con contexto 128 y evaluadas hasta 1024 (media de 3 semillas; desviaciones $\le$0.011 en CE y $\le$1.8 en perplejidad, hasta 6.8 en RoPE y el híbrido). $^a$Tabla de 512 posiciones en estas ejecuciones.}
+\label{tab:pe}
+\end{table}
+
+\paragraph{Resultados.}
+La Tabla~\ref{tab:pe} resume el modelado de lenguaje.
+Las APE se disparan en cuanto se supera el contexto de entrenamiento (perplejidad $\times$4).
+ALiBi es la única que extrapola sin pérdida hasta 8$\times$ (5.57$\to$5.59), a cambio de ser algo peor que RoPE dentro de la distribución; T5 degrada gradualmente y NoPE degrada poco en términos relativos pero parte de la peor perplejidad (su CE es 0.25 nats peor que ALiBi).
+RoPE es la mejor con contexto 128 y la peor a 1024, y el híbrido no lo corrige a esta escala.
+En tareas algorítmicas (Tabla~\ref{tab:tasks}; entrenamiento con $n{\le}20$ y evaluación con $21{\le}n{\le}40$, exact-match) ninguna APE generaliza, NoPE generaliza perfectamente al ordenar (1.00) y ALiBi es la mejor en copiar y en paridad, como en \citet{kazemnejad2023impact}. Suma, suma módulo 10 y \emph{associative recall} no se aprenden ni en las longitudes vistas ($\le$0.33) con este presupuesto, así que no permiten comparar.
+
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Tarea & Apr. & Sin. & NoPE & ALiBi & T5 & \textcolor{gray}{RoPE} \\
+\midrule
+Copiar & 0.00 & 0.00 & 0.21 & \textbf{0.50} & 0.14 & \textcolor{gray}{0.04} \\
+Invertir & 0.00 & 0.00 & \textbf{0.29} & 0.13 & 0.14 & \textcolor{gray}{0.05} \\
+Ordenar & 0.00 & 0.22 & \textbf{1.00} & 0.49 & 0.79 & \textcolor{gray}{0.10} \\
+Paridad & 0.51 & 0.50 & 0.52 & \textbf{0.61} & 0.47 & \textcolor{gray}{0.49} \\
+\bottomrule
+\end{tabular}
+\caption{Exact-match en longitudes no vistas (media de 3 semillas; en las vistas es 1.00 salvo paridad, 0.67--0.99).}
+\label{tab:tasks}
+\end{table}
+
+\section{Mixture of Experts}
+\label{sec:moe}
+\paragraph{Formulación.}
+Cada FFN se sustituye por $E$ expertos con la misma forma y un router lineal. Para un token $x\in\mathbb{R}^D$:
+\begin{equation}
+\begin{gathered}
+p = \mathrm{softmax}(W_r x)\in\mathbb{R}^E,\qquad \mathcal{T} = \mathrm{top}_k(p),\\
+y = \textstyle\sum_{e\in\mathcal{T}} w_e\,\mathrm{FFN}_e(x).
+\end{gathered}
+\end{equation}
+Con $k{>}1$, $w_e = p_e/\sum_{\mathcal{T}} p$ (Mixtral); con $k{=}1$, $w_e = p_e$ (Switch), porque renormalizar daría $w\equiv1$ y el router no recibiría gradiente de la CE (medido: $2\cdot10^{-6}$ frente a 19.6).
+Para evitar el colapso en pocos expertos se añade la pérdida de balanceo de \citet{fedus2022switch},
+\begin{equation}
+\mathcal{L}_{\mathrm{aux}} = E \textstyle\sum_{i=1}^{E} f_i P_i,\qquad \mathcal{L} = \mathrm{CE} + \alpha\,\overline{\mathcal{L}_{\mathrm{aux}}},
+\end{equation}
+donde $f_i$ es la fracción de las $Nk$ asignaciones que recibe el experto $i$ (no derivable) y $P_i$ su probabilidad media (por donde entra el gradiente); vale 1 con reparto uniforme y $E$ con colapso total, y se promedia entre capas.
+\textbf{Despacho.} Las $N{=}BT$ filas de índices $(N,k)$ se aplanan en $Nk$ asignaciones, se ordenan por experto (\code{argsort} estable) y \code{bincount} da el tamaño de cada bloque; se copian las entradas en ese orden ($Nk{\times}D$), cada experto procesa su bloque contiguo con una sola multiplicación y \code{index\_add\_} devuelve cada resultado ponderado a su token, sumando los $k$ de cada uno. Así el coste crece con $k$ y no con $E$.
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}p{5.9cm}r@{}}
+\toprule
+Comprobación (referencia) & Error máx. \\
+\midrule
+Atención NoPE/ALiBi/RoPE (SDPA de PyTorch) & $\le10^{-5}$ \\
+RoPE (Llama, HF); cubetas de T5 (T5, HF) & 0 \\
+MoE top-$k$ renormalizado (Mixtral, HF) & $8\cdot10^{-7}$ \\
+MoE top-1 sin renormalizar (Switch, HF) & 0 \\
+$\mathcal{L}_{\mathrm{aux}}$ y z-loss (HF; $\mathcal{L}^{\mathrm{HF}}_{\mathrm{aux}} = k\,\mathcal{L}_{\mathrm{aux}}$) & $\le10^{-6}$ \\
+Despachos \code{sorted}/\code{loop} (denso, con gradientes) & $\le10^{-5}$ \\
+$E{=}1$ (FFN del libro); $k{=}E$ (mezcla softmax) & $\le10^{-5}$ \\
+GPT con MoE \emph{upcycled} (denso, 6 codificaciones) & $\le10^{-5}$ \\
+Inyección de $\mathcal{L}_{\mathrm{aux}}$ (CE$+\alpha\mathcal{L}_{\mathrm{aux}}$ explícita) & $\le10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\caption{Validación numérica con \code{torch.allclose} (HF = Hugging Face \code{transformers}).}
+\label{tab:val}
+\end{table}
+
+\paragraph{Validación.}
+La Tabla~\ref{tab:val} resume la batería.
+Con los pesos copiados, nuestra capa reproduce \code{MixtralSparseMoeBlock} (con expertos SwiGLU) y \code{SwitchTransformersSparseMLP}, y nuestra $\mathcal{L}_{\mathrm{aux}}$ es la de Hugging Face dividida por $k$: normalizamos $f$ para que 1 signifique equilibrio con cualquier $k$.
+Con $E{=}1$ la capa es el FFN del libro, y un GPT cuyos expertos son copias del FFN denso \citep{komatsuzaki2023upcycling} reproduce los logits del modelo denso: la integración no altera el modelo base.
+
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Modelo & Parám. (act.) & CE val & tok/s & Carga \\
+\midrule
+Denso (libro) & 0.82M & 1.645\pmsd{.008} & 18.6k & -- \\
+MoE $k{=}1$ & 2.41M (0.83M) & 1.595\pmsd{.012} & 17.6k & 0.34 \\
+MoE $k{=}2$ & 2.41M (1.35M) & 1.581\pmsd{.006} & 11.9k & 0.31 \\
+Denso ancho & 2.40M & 1.576\pmsd{.004} & 6.4k & -- \\
+\midrule
+$k{=}1$, $\alpha{=}0$ & 2.41M (0.83M) & 1.605\pmsd{.006} & 17.5k & 0.65 \\
+$k{=}1$, $\alpha{=}0.1$ & 2.41M (0.83M) & 1.594\pmsd{.004} & 17.9k & 0.26 \\
+$k{=}1$, z-loss & 2.41M (0.83M) & \TODO{x} & \TODO{x} & \TODO{x} \\
+\bottomrule
+\end{tabular}
+\caption{Protocolo P2 con $E{=}4$ y $\alpha{=}0.01$ salvo indicación; el denso ancho tiene un FFN 4$\times$ más ancho. Carga: fracción de tokens del experto más usado en la peor capa (0.25 = equilibrio); z-loss con coeficiente $10^{-3}$.}
+\label{tab:moe}
+\end{table}
+
+\paragraph{Resultados.}
+Con el mismo cómputo por token ($k{=}1$), el MoE baja la CE en 0.050 nats (las 3 semillas del MoE mejoran a las 3 del denso) perdiendo solo un 5.6\% de velocidad (Tabla~\ref{tab:moe}).
+Frente a un denso con los mismos parámetros totales y 4$\times$ más cómputo en el FFN, recupera el 72\% de su mejora entrenando 2.75$\times$ más rápido; con $k{=}2$, el 93\% a 1.86$\times$ (la diferencia restante, 0.005, está dentro del ruido).
+Sin $\mathcal{L}_{\mathrm{aux}}$ el experto más usado llega al 65\% de los tokens (Figura~\ref{fig:main}c) y la CE empeora ligeramente (tendencia, no significativa con 3 semillas); con $\alpha{=}0.1$ el reparto es casi perfecto (26\%) sin coste en CE. \TODO{z-loss}.
+En una capa aislada (4096 tokens, \emph{forward}+\emph{backward}), el despacho por ordenación cuesta lo mismo que el FFN denso (24.1 frente a 23.6\,ms) y no depende de $E$ (25.9\,ms con $E{=}8$), mientras que la referencia densa cuesta $E$ veces más (99 y 203\,ms).
+Los expertos se especializan más con la profundidad: la información mutua normalizada entre el tipo de carácter y el experto sube de 0.08--0.22 en la capa 1 a 0.37--0.41 en la 4, donde un experto recibe el 100\% de los saltos de línea, el 82\% de las mayúsculas y el 86\% de la puntuación.
+
+\section{Combinación de ambas ampliaciones}
+\label{sec:combo}
+La codificación posicional actúa en la entrada y en la atención y el MoE en el FFN, así que se componen sustituyendo \code{block.ff} en el modelo con codificaciones intercambiables.
+El bucle de entrenamiento del protocolo P1 solo optimiza la CE; en lugar de modificarlo, cada capa MoE inyecta $\alpha\,\partial\mathcal{L}_{\mathrm{aux}}/\partial\theta$ en el \emph{backward} mediante una función de autograd que es la identidad en el \emph{forward} (la técnica de Megatron-LM; \citealp{shoeybi2019megatron}). Los gradientes coinciden con los de optimizar CE$+\alpha\mathcal{L}_{\mathrm{aux}}$ de forma explícita (Tabla~\ref{tab:val}).
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figuras/fig_principal.pdf}
+\caption{(a) Perplejidad frente a la longitud de contexto con FFN denso (discontinua) y MoE (continua); la línea punteada marca el contexto de entrenamiento. (b) Fracción de tokens del experto más usado (peor capa) por tramo de 128 posiciones en los modelos MoE. (c) Ablación del coeficiente de $\mathcal{L}_{\mathrm{aux}}$ por capa (puntos: semillas). Medias de 3 semillas.}
+\label{fig:main}
+\end{figure*}
+
+\begin{table}[t]
+\centering\small\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & \multicolumn{3}{c}{CE val (ctx 128)} & \multicolumn{2}{c}{Perpl. 1024} \\
+\cmidrule(lr){2-4}\cmidrule(l){5-6}
+Codificación & denso & MoE & $\Delta$ & denso & MoE \\
+\midrule
+APE aprendida & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
+NoPE & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
+ALiBi & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
+T5 & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} & \TODO{x} \\
+\bottomrule
+\end{tabular}
+\caption{Protocolo P1 con FFN denso y MoE ($E{=}4$, $k{=}1$, $\alpha{=}0.01$, inyectada): 3 semillas emparejadas por codificación. $\Delta$CE: MoE menos denso con la misma semilla.}
+\label{tab:combo}
+\end{table}
+
+\paragraph{Resultados.}
+Repetimos el protocolo P1 con FFN denso y MoE para cuatro codificaciones, emparejando semillas en una misma máquina (Tabla~\ref{tab:combo}, Figura~\ref{fig:main}a).
+\TODO{resultados combinados}
+La Figura~\ref{fig:main}b muestra el porqué en NoPE: el router de la capa 2, equilibrado en las posiciones vistas, envía \TODO{x} de los tokens de las posiciones 896--1023 a un único experto. La señal de posición absoluta que NoPE reconstruye a partir de la máscara causal \citep{kazemnejad2023impact} sale de su rango y el router la convierte en un desequilibrio de carga; con ALiBi, cuyo sesgo es relativo, \TODO{y T5} el reparto apenas cambia.
+Nuestras ejecuciones densas difieren ligeramente de las del equipo (p.\,ej., NoPE: \TODO{x} frente a 2.01) aunque su modelo evaluado con nuestro código reproduce su cifra: la diferencia nace del entorno de entrenamiento, así que solo comparamos ejecuciones emparejadas.
+
+\section{Conclusiones y limitaciones}
+Las dos ampliaciones atacan limitaciones distintas del modelo del libro y se componen sin tocar el código de ninguna.
+La codificación posicional decide si el modelo extrapola: ALiBi mantiene la perplejidad hasta 8$\times$ la longitud de entrenamiento y NoPE ordena perfectamente secuencias más largas que las vistas.
+El MoE, validado contra Mixtral y Switch, añade capacidad a cómputo constante: $-0.05$ nats con $k{=}1$ y entre el 72 y el 93\% de la mejora de un modelo denso con los mismos parámetros, de 1.9 a 2.75$\times$ más rápido.
+Al combinarlas, \TODO{conclusión combinada}: el router actúa como detector de representaciones fuera de distribución.
+\textbf{Limitaciones:} modelos diminutos entrenados en CPU con un único corpus por caracteres; presupuesto fijo, no convergencia; 3 semillas (diferencias menores de $\sim$0.01 nats no son concluyentes); tres tareas sintéticas no se aprenden ni en las longitudes vistas; y los tiempos son de CPU (en GPU el desequilibrio de carga es más costoso).
+Quedan como trabajo futuro la capacidad máxima por experto, los expertos compartidos \citep{dai2024deepseekmoe} y un enrutado robusto a la posición.
+
+\paragraph{Reproducibilidad.}
+Todo está en la rama \code{feat/moe} del repositorio del grupo. Los tests (\code{pytest}) y las autocomprobaciones (\code{selftest}) se lanzan con un comando, igual que cada bloque de experimentos, y todas las cifras salen de los ficheros de \code{results/} y \code{runs/}.
+
+\bibliography{referencias}
+
+\end{document}
