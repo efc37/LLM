@@ -52,8 +52,8 @@ Notación: B batch, T tokens, D emb_dim, E expertos, k expertos activos por toke
 | 5 | `MoETransformerBlock` + `GPTMoEModel` + `build_model` + `upcycle_from_dense` | hecho | ver git log |
 | 6 | Tiny Shakespeare (char-level) + `scripts/train_shakespeare.py` + `configs/` + `calc_loss_batch_moe` | hecho | ver git log |
 | 7 | `scripts/run_all.py`: denso vs MoE, ablación coef. aux {0, 0.01, 0.1}, tokens/s, uso de expertos, especialización | hecho | b0dac07, 5374c23 |
-| 8 | Sección de la memoria | pendiente | |
-| 9 | Unir MoE al modelo del equipo (`GPTModelExt`): MoE + codificaciones posicionales | propuesto (16-oct) | |
+| 8 | Memoria completa del grupo (ACL, `memoria/`) | en curso (18-oct) | |
+| 9 | Unir MoE al modelo del equipo (`attach_moe`, inyección de L_aux, `moe_ext.py`) + validación contra Hugging Face + z-loss + experimento combinado | código y tests hechos; experimento combinado en curso (18-oct) | 836fc3a, 8c43927, 31e6dda, 0a05573 |
 
 **Bloque 1 — Router top-k.** `gate = Linear(D, E, bias=False)`: x (N,D) → logits (N,E) → softmax `probs` (N,E) → `topk` → `indices` (N,k) y `weights` (N,k). `probs` se guarda para la pérdida auxiliar. `topk` no es derivable en los índices: el router aprende a través de los pesos (y de la pérdida auxiliar).
 
@@ -123,6 +123,21 @@ Conclusiones (y cuánto se pueden afirmar):
 5. **Especialización** (`results/specialization_moe_e4k1.md`): la información mutua normalizada entre la clase del carácter de entrada y el experto crece con la profundidad (capa 1: 0.08–0.22; capa 4: 0.37–0.41, en las 3 semillas). En la capa 4 (semilla 1), un experto recibe el 100 % de los saltos de línea, el 82 % de las mayúsculas y el 86 % de la puntuación ("fronteras": fin de verso, nombres de personaje); vocales y consonantes van a otros expertos. Matiz: el router ve el estado contextual, no solo el carácter, así que es una correlación, no una regla.
 - **Limitaciones:** los modelos siguen mejorando a los 2000 pasos (la mejor val CE es la del último paso), así que son comparaciones a presupuesto fijo, no a convergencia; solo 3 semillas; un único corpus pequeño y tokens por carácter; tiempos en CPU (en GPU el despacho se comporta distinto).
 
+**Bloque 9 — Unión con el trabajo del equipo y validación contra Hugging Face (18-oct).** El usuario autorizó terminar la práctica completa en `feat/moe` (integración, experimentos, memoria y guía) con un único push al final.
+- `attach_moe(model, cfg, inject_aux_loss)` (en `moe.py`): sustituye `block.ff` por `MoEFeedForward` en cualquier GPT cuyo bloque guarde el FFN en `.ff` (el del libro o el `GPTModelExt` del equipo). Utilidades genéricas `moe_layers`, `moe_aux_loss`, `moe_z_loss`, `moe_expert_stats` (buscan con `model.modules()`); `GPTMoEModel` las usa (sin cambiar resultados: checkpoints del bloque 7 cargan en modo estricto y la especialización regenerada es idéntica byte a byte).
+- **Inyección de L_aux** (`_AuxLossInjector`, técnica `MoEAuxLossAutoScaler` de Megatron-LM): `autograd.Function` identidad en el forward que en el backward devuelve `coef` como gradiente de L_aux ⇒ equivale a optimizar CE + coef·L_aux sin tocar el bucle (`pretrain` del equipo solo usa CE). Coef. por capa = α / nº capas MoE. Solo actúa en `train()` con gradiente.
+- `src/moe_ext.py`: `build_ext_model(cfg)` = `GPTModelExt(cfg)` + `attach_moe(..., inject_aux_loss=True)` si hay `"moe"`; sin `"moe"` es exactamente el modelo del equipo. Sirve de `model_factory` para su `pretrain` y `load_checkpoint`.
+- Tests (`tests/test_moe_ext.py`, 26): upcycling ≡ su modelo denso con las 6 codificaciones (learned, sinusoidal, nope, alibi, t5, rope_nope2) × 3 configs MoE, también con secuencias más largas que las de entrenamiento; inyección ≡ pérdida explícita (gradientes de todos los parámetros, 1e-6); checkpoints; su `pretrain` entrena el MoE.
+- **Hallazgo:** el gradiente de L_aux NO solo llega al router: las probabilidades dependen de la entrada del router ⇒ también a embeddings, atención y capas previas; solo no lo ven los expertos de la última capa MoE, `final_norm` y `out_head` (test dedicado; salió de un test que suponía lo contrario).
+- **Validación contra Hugging Face** (`pip install transformers`, v5.20.1; `tests/test_moe_hf.py`, 20 tests): opción `expert_type="swiglu"` para comparar con `MixtralSparseMoeBlock` (E4k2, E8k2, E8k3 × 3 despachos: error máx. 8e-7) y `SwitchTransformersSparseMLP` (k=1 sin renormalizar, expertos GELU-tanh sin sesgo: error 0); `load_balancing_loss_func` de HF = k · la nuestra (HF normaliza f por N, nosotros por N·k); `router_z_loss_func` igual; control negativo (k=1 renormalizado se aleja 0.45). Con transformers también pasan `validate_rope_hf.py` del equipo (18/18, error 0) y las comprobaciones T5-vs-HF de `positional.py` (39/39).
+- **Router z-loss** (ST-MoE): `router_z_loss(logits)` = media de logsumexp²; opcional en `calc_loss_batch_moe` (`z_loss_coef`, 0 por defecto) y en `train_shakespeare.py` (`model.moe.z_loss_coef`). Ablación `configs/moe_e4k1_z.json` (coef 0.001) añadida a `run_all.py` (pendiente de ejecutar tras el experimento combinado). `scripts/router_stats.py`: confianza media del router ~0.74 (peor capa ~0.91), z-loss ~9 (peor capa ~17) en los modelos del bloque 7.
+- **Experimento combinado** (`scripts/context_ppl_moe.py`): protocolo idéntico a `context_ppl.py` del equipo (5 épocas, dropout 0.1, contexto 128, evaluación 32–1024) cambiando solo el `model_factory`; {learned, nope, alibi, t5} × {dense, moe_e4k1} × semillas {0,1,2}; mide además el reparto del router por tramo de posición (distancia de variación total frente a las posiciones 0–127). Checkpoints en `runs/context_moe/ckpt/` (no versionados).
+- **Reproducción del equipo:** mis densos re-ejecutados no son idénticos a los suyos (p. ej. NoPE s0: 1.9933 frente a 2.0101; ALiBi s0: 1.7657 frente a 1.7607). Su checkpoint evaluado aquí da exactamente su cifra (2.0101) ⇒ la diferencia nace en el entrenamiento (entorno/versión del código), no en la evaluación. En learned además su tabla era de 512 posiciones (la mía de 1024) ⇒ otra inicialización. Por eso la comparación denso/MoE usa solo ejecuciones propias emparejadas.
+
+**Bloque 8 — Memoria** (`memoria/`): `memoria.tex` (ACL oficial, en español), `referencias.bib`, `acl.sty`/`acl_natbib.bst` (descargados del repositorio oficial acl-org/acl-style-files), `figuras/fig_principal.pdf` (generada por `scripts/figures_memoria.py`). Se compila con Tectonic (compilador LaTeX autocontenido descargado en el scratchpad; no se instaló nada en el sistema) o en Overleaf. Pendiente: nombres de autores (David [apellidos], [nombre] de aos35) — marcados en rojo.
+
+**Guía de estudio:** `C:\Users\Usuario\Desktop\AI Engineering\Year 4\GUIA_PRACTICA_PLN_LLM.md` (fuera del repo): todo el proyecto explicado desde cero (modelo base caps. 2–6, ampliación del equipo, MoE, unión, experimentos, reproducción, git, glosario y banco de preguntas con respuesta).
+
 **Preguntas de repaso (tipo examen)**
 - E=8, k=2, batch 4×64: shapes de `probs`, `indices`, `weights`. ¿Y de `flat_experts`, `x_sorted`, `counts`? ¿Cuánto suma `counts`?
 - ¿Por qué `topk` no deja pasar gradiente por los índices? ¿Por dónde aprende el router?
@@ -142,6 +157,10 @@ Conclusiones (y cuánto se pueden afirmar):
 - ¿Por qué con 3 semillas no podemos afirmar que MoE k=2 y el denso ancho sean distintos?
 - ¿Por qué se evalúa a todos los modelos sobre los mismos lotes de validación? ¿Por qué tokenizar por carácter y no con el BPE de GPT-2 aquí?
 - En el entrenamiento MoE, ¿qué se suma a la CE y con qué peso? ¿Qué valor de L_aux indicaría que el router está equilibrado?
+- ¿Cómo se aplica L_aux si el bucle de entrenamiento del equipo solo calcula la CE? ¿Qué devuelve el `backward` de `_AuxLossInjector` y por qué equivale a CE + α·L_aux?
+- ¿Qué parámetros reciben gradiente de L_aux y cuáles no? ¿Por qué?
+- ¿Por qué la L_aux de Hugging Face (Mixtral) vale k veces la nuestra?
+- ¿Por qué se pueden combinar MoE y codificación posicional sin tocar el código de ninguno?
 
 ## Cómo quiero que trabajes
 1. **Primero explora, no escribas.** Al empezar: resume la estructura del repo, qué está hecho, qué falta, y revisa `git log` y las ramas. No toques nada todavía.
