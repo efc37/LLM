@@ -48,7 +48,7 @@ Nuestras contribuciones son:
 (1) una interfaz de tres ganchos que permite cambiar la codificación posicional sin tocar el resto del modelo (\S\ref{sec:pe});
 (2) una capa MoE completa con validación contra implementaciones de referencia (\S\ref{sec:moe});
 (3) la composición de ambas sin modificar el código de ninguna (\S\ref{sec:combo}); y
-(4) una batería reproducible: 127 tests automáticos y 101 autocomprobaciones, y experimentos que se relanzan con un único comando por bloque.
+(4) una batería reproducible: 111 tests automáticos y 176 autocomprobaciones, y experimentos que se relanzan con un único comando por bloque.
 RoPE \citep{su2024roformer}, descartada como ampliación por indicación del profesor, aparece solo como referencia.
 
 \section{Modelo base y protocolo}
@@ -74,7 +74,7 @@ ALiBi usa $b_h(\Delta) = -m_h \Delta$ con $m_h = 2^{-8h/H}$ \citep{press2022alib
 El híbrido \code{rope\_nopeN} quita la codificación a una de cada $N$ capas \citep{yang2025rope}.
 
 \paragraph{Validación.}
-La atención con NoPE, ALiBi y RoPE coincide con \code{scaled\_dot\_product\_attention} de PyTorch \citep{paszke2019pytorch} (con el sesgo como máscara); RoPE coincide con una referencia en aritmética compleja y con la de Llama en \code{transformers} \citep{wolf2020transformers} (error 0), y las cubetas de T5 con las de Hugging Face. Con la APE aprendida y los pesos del modelo base, el modelo extendido reproduce exactamente sus logits (Tabla~\ref{tab:val}).
+La atención con NoPE, ALiBi y RoPE coincide con \code{scaled\_dot\_product\_attention} de PyTorch \citep{paszke2019pytorch} (con el sesgo como máscara); RoPE coincide con una referencia en aritmética compleja y con la de Llama en \code{transformers} \citep{wolf2020transformers} (error 0), y las cubetas de T5 con las de Hugging Face. Con los pesos del modelo base, el modelo extendido reproduce sus logits (Tabla~\ref{tab:val}).
 
 \begin{table}[t]
 \centering\small\setlength{\tabcolsep}{2.8pt}
@@ -141,12 +141,13 @@ donde $f_i$ es la fracción de las $Nk$ asignaciones que recibe el experto $i$ (
 
 \begin{table}[t]
 \centering\footnotesize\setlength{\tabcolsep}{3pt}
-\begin{tabular}{@{}p{6.3cm}r@{}}
+\begin{tabular}{@{}p{6.1cm}r@{}}
 \toprule
 Comprobación (referencia) & Error máx. \\
 \midrule
 Atención NoPE/ALiBi/RoPE (SDPA, PyTorch) & $\le10^{-5}$ \\
 RoPE (Llama, HF); cubetas de T5 (T5, HF) & 0 \\
+Modelo extendido: APE apr., sinusoidal, NoPE (GPT del libro) & $\le10^{-6}$ \\
 MoE top-$k$ renormalizado (Mixtral, HF) & $8\cdot10^{-7}$ \\
 MoE top-1 sin renormalizar (Switch, HF) & 0 \\
 $\mathcal{L}_{\mathrm{aux}}$ y z-loss (HF; $\mathcal{L}^{\mathrm{HF}}_{\mathrm{aux}} = k\,\mathcal{L}_{\mathrm{aux}}$) & $\le10^{-6}$ \\
@@ -178,17 +179,17 @@ Denso ancho & 2.40M & 1.576\pmsd{.004} & 6.4k & -- \\
 \midrule
 $k{=}1$, $\alpha{=}0$ & 2.41M (0.83M) & 1.605\pmsd{.006} & 17.5k & 0.65 \\
 $k{=}1$, $\alpha{=}0.1$ & 2.41M (0.83M) & 1.594\pmsd{.004} & 17.9k & 0.26 \\
-$k{=}1$, z-loss & 2.41M (0.83M) & \TODO{x} & \TODO{x} & \TODO{x} \\
+$k{=}1$, z-loss & 2.41M (0.83M) & 1.596\pmsd{.010} & 16.0k$^\dagger$ & 0.35 \\
 \bottomrule
 \end{tabular}
-\caption{Protocolo P2 con $E{=}4$ y $\alpha{=}0.01$ salvo indicación; el denso ancho tiene un FFN 4$\times$ más ancho. Carga: fracción de tokens del experto más usado en la peor capa (0.25 = equilibrio); z-loss con coeficiente $10^{-3}$.}
+\caption{Protocolo P2 con $E{=}4$ y $\alpha{=}0.01$ salvo indicación; el denso ancho tiene un FFN 4$\times$ más ancho. Carga: fracción de tokens del experto más usado en la peor capa (0.25 = equilibrio); z-loss con coeficiente $10^{-3}$. $^\dagger$Medido en otra sesión: no comparable.}
 \label{tab:moe}
 \end{table}
 
 \paragraph{Resultados.}
 Con el mismo cómputo por token ($k{=}1$), el MoE baja la CE en 0.050 nats (las 3 semillas del MoE mejoran a las 3 del denso) perdiendo solo un 5.6\% de velocidad (Tabla~\ref{tab:moe}).
 Frente a un denso con los mismos parámetros totales y 4$\times$ más cómputo en el FFN, recupera el 72\% de su mejora entrenando 2.75$\times$ más rápido; con $k{=}2$, el 93\% a 1.86$\times$ (la diferencia restante, 0.005, está dentro del ruido).
-Sin $\mathcal{L}_{\mathrm{aux}}$ el experto más usado llega al 65\% de los tokens (Figura~\ref{fig:main}c) y la CE empeora ligeramente (tendencia, no significativa con 3 semillas); con $\alpha{=}0.1$ el reparto es casi perfecto (26\%) sin coste en CE. \TODO{z-loss}.
+Sin $\mathcal{L}_{\mathrm{aux}}$ el experto más usado llega al 65\% de los tokens (Figura~\ref{fig:main}c) y la CE empeora ligeramente (tendencia, no significativa con 3 semillas); con $\alpha{=}0.1$ el reparto es casi perfecto (26\%) sin coste en CE. La router z-loss \citep{zoph2022stmoe} reduce un orden de magnitud la escala de los logits del router ($\mathbb{E}[\mathrm{logsumexp}^2]$: 9.2$\to$0.87) y algo su confianza (0.74$\to$0.70), sin cambiar la CE ni el reparto: a esta escala la saturación del router no limita el entrenamiento.
 En una capa aislada (4096 tokens, \emph{forward}+\emph{backward}), el despacho por ordenación cuesta lo mismo que el FFN denso (24.1 frente a 23.6\,ms) y no depende de $E$ (25.9\,ms con $E{=}8$), mientras que la referencia densa cuesta $E$ veces más (99 y 203\,ms).
 Los expertos se especializan más con la profundidad: la información mutua normalizada entre el tipo de carácter y el experto sube de 0.08--0.22 en la capa 1 a 0.37--0.41 en la 4, donde un experto recibe el 100\% de los saltos de línea, el 82\% de las mayúsculas y el 86\% de la puntuación.
 
