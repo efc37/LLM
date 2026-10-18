@@ -43,6 +43,7 @@ class TopKRouter(nn.Module):
     def forward(self, x):
         # x: (N, D)
         logits = self.gate(x)                     # (N, E)
+        self.last_logits = logits                 # para la router z-loss
         probs = torch.softmax(logits, dim=-1)     # (N, E)
 
         # Los k expertos con mayor probabilidad para cada token
@@ -77,6 +78,16 @@ def load_balancing_loss(probs, indices, n_experts):
     return n_experts * torch.sum(f * P)
 
 
+def router_z_loss(logits):
+    """Router z-loss (ST-MoE, Zoph et al. 2022): media de logsumexp(logits)^2.
+
+    Penaliza logits grandes del router. Con logits grandes el softmax se satura y su
+    gradiente desaparece (es lo que impide que L_aux recupere un router colapsado).
+    logits: (N, E) -> escalar.
+    """
+    return torch.logsumexp(logits, dim=-1).pow(2).mean()
+
+
 class _AuxLossInjector(torch.autograd.Function):
     """Aplica la pérdida auxiliar sin tocar el bucle de entrenamiento.
 
@@ -104,22 +115,35 @@ class _AuxLossInjector(torch.autograd.Function):
 # Expertos y capa MoE
 #####################################
 class Expert(nn.Module):
-    """Igual que FeedForward del libro, pero con dimensión oculta configurable.
+    """Un experto = un FFN. Dos variantes:
 
-    Mantiene el mismo nombre de submódulos (self.layers) para que los pesos de
-    un FeedForward se puedan copiar con load_state_dict.
+    "gelu" (por defecto): igual que FeedForward del libro, con dimensión oculta
+        configurable. Mantiene el nombre de submódulos (self.layers) para que los pesos
+        de un FeedForward se puedan copiar con load_state_dict.
+    "swiglu": el FFN de Llama/Mixtral, W_down(SiLU(W_gate x) * W_up x), sin sesgos.
+        Solo se usa para validar el MoE contra Mixtral de Hugging Face.
     """
 
-    def __init__(self, emb_dim, hidden_dim):
+    def __init__(self, emb_dim, hidden_dim, kind="gelu"):
         super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(emb_dim, hidden_dim),
-            GELU(),
-            nn.Linear(hidden_dim, emb_dim),
-        )
+        self.kind = kind
+        if kind == "gelu":
+            self.layers = nn.Sequential(
+                nn.Linear(emb_dim, hidden_dim),
+                GELU(),
+                nn.Linear(hidden_dim, emb_dim),
+            )
+        elif kind == "swiglu":
+            self.w_gate = nn.Linear(emb_dim, hidden_dim, bias=False)
+            self.w_up = nn.Linear(emb_dim, hidden_dim, bias=False)
+            self.w_down = nn.Linear(hidden_dim, emb_dim, bias=False)
+        else:
+            raise ValueError(f"expert_type desconocido: {kind}")
 
     def forward(self, x):
-        return self.layers(x)
+        if self.kind == "gelu":
+            return self.layers(x)
+        return self.w_down(torch.nn.functional.silu(self.w_gate(x)) * self.w_up(x))
 
 
 class MoEFeedForward(nn.Module):
@@ -128,7 +152,7 @@ class MoEFeedForward(nn.Module):
     salida(x) = sum_{j=1..k} weights_j(x) * Experto_{indices_j(x)}(x)
 
     cfg["moe"] admite: n_experts, top_k, expert_hidden (por defecto 4*emb_dim),
-    normalize_topk (por defecto k>1) y dispatch:
+    expert_type ("gelu" por defecto, o "swiglu"), normalize_topk (por defecto k>1) y dispatch:
       "dense"  referencia: todos los expertos con todos los tokens (coste E·FFN)
       "loop"   por experto, selecciona con una máscara los tokens que lo eligieron
       "sorted" ordena las asignaciones por experto y procesa lotes contiguos (por defecto)
@@ -147,7 +171,7 @@ class MoEFeedForward(nn.Module):
         self.router = TopKRouter(emb_dim, self.n_experts, self.top_k,
                                  moe_cfg.get("normalize_topk"))
         self.experts = nn.ModuleList(
-            [Expert(emb_dim, hidden) for _ in range(self.n_experts)])
+            [Expert(emb_dim, hidden, moe_cfg.get("expert_type", "gelu")) for _ in range(self.n_experts)])
 
         # Se rellenan en cada forward; los usan la pérdida auxiliar y las estadísticas
         self.last_probs = None    # (N, E)
@@ -180,6 +204,10 @@ class MoEFeedForward(nn.Module):
     def aux_loss(self):
         """Pérdida de balanceo del último forward."""
         return load_balancing_loss(self.last_probs, self.last_indices, self.n_experts)
+
+    def z_loss(self):
+        """Router z-loss del último forward."""
+        return router_z_loss(self.router.last_logits)
 
     def _dispatch_dense(self, x_flat, weights, indices):
         """Referencia: todos los expertos procesan todos los tokens (coste E veces el
@@ -295,6 +323,11 @@ def moe_aux_loss(model):
     return torch.stack([layer.aux_loss() for layer in moe_layers(model)]).mean()
 
 
+def moe_z_loss(model):
+    """Media de la router z-loss sobre las capas MoE del último forward."""
+    return torch.stack([layer.z_loss() for layer in moe_layers(model)]).mean()
+
+
 def moe_expert_stats(model):
     """Asignaciones por experto en cada capa MoE del último forward: (L_moe, E)."""
     return torch.stack([
@@ -347,8 +380,9 @@ def upcycle_from_dense(moe_model, dense_model):
 #####################################
 # Pérdida de entrenamiento
 #####################################
-def calc_loss_batch_moe(input_batch, target_batch, model, device, aux_loss_coef=0.0):
-    """Como calc_loss_batch del cap. 5, más el término de balanceo si el modelo es MoE.
+def calc_loss_batch_moe(input_batch, target_batch, model, device, aux_loss_coef=0.0, z_loss_coef=0.0):
+    """Como calc_loss_batch del cap. 5, más el término de balanceo si el modelo es MoE
+    (y, opcionalmente, la router z-loss).
 
     Devuelve (pérdida total, entropía cruzada, L_aux); L_aux = 0 en el modelo base.
     No usar aux_loss_coef > 0 con capas que ya inyectan L_aux (attach_moe con
@@ -361,4 +395,7 @@ def calc_loss_batch_moe(input_batch, target_batch, model, device, aux_loss_coef=
         aux = moe_aux_loss(model)
     else:
         aux = torch.zeros((), device=ce.device)
-    return ce + aux_loss_coef * aux, ce, aux
+    total = ce + aux_loss_coef * aux
+    if z_loss_coef > 0 and moe_layers(model):
+        total = total + z_loss_coef * moe_z_loss(model)
+    return total, ce, aux
