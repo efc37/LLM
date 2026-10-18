@@ -24,4 +24,4 @@ Cualquiera de estas opciones:
 | Tabla 5 y figura 1a/1b (combinación) | `runs/context_moe/summary.md` (`scripts/context_ppl_moe.py`) |
 | Figura 1c | `results/summary.json` |
 
-Antes de entregar hay que completar los nombres que faltan en la línea de autores (aparecen en rojo).
+Autores: Alejandro Operé, David Muñoz, Elena Fernández y María Mestre.
